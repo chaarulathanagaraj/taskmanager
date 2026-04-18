@@ -1,0 +1,14 @@
+<!-- WiX configuration for AIOS Monitor MSI -->
+<!-- This file customizes the Windows installer experience -->
+
+<WixVariables>
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+    <WixVariable Id="WixUIBannerBmp" Value="banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="dialog.bmp" />
+</WixVariables>
+
+<CustomAction Id="SetServicePath" Property="SERVICEPATH" Value="[INSTALLDIR]aios-service.exe" />
+
+<InstallExecuteSequence>
+    <Custom Action="SetServicePath" Before="InstallInitialize" />
+</InstallExecuteSequence>

@@ -1,0 +1,25 @@
+﻿    public Map<String, Object> executePID(String actionType, int pid, String processName, boolean dryRun) {
+        Map<String, Object> result = new java.util.HashMap<>();
+        result.put("actionType", actionType);
+        result.put("targetPid", pid);
+        result.put("dryRun", dryRun);
+        Map<String, Object> beforeState = captureState(actionType, pid);
+        result.put("beforeState", beforeState);
+        try {
+            com.aios.shared.dto.ActionResult actionResult;
+            switch (actionType) {
+                case "KILL_PROCESS" -> actionResult = executeKillProcess(pid, dryRun);
+                case "REDUCE_PRIORITY" -> actionResult = executeReducePriority(pid, dryRun);
+                case "TRIM_WORKING_SET" -> actionResult = executeTrimWorkingSet(pid, dryRun);
+                case "RESTART_PROCESS" -> actionResult = executeRestartProcess(pid, processName, dryRun);
+                default -> throw new IllegalArgumentException("Unsupported action type: " + actionType);
+            }
+            result.put("success", actionResult.isSuccess());
+            result.put("message", actionResult.getMessage());
+            return result;
+        } catch (Exception e) {
+            result.put("success", false);
+            result.put("error", e.getMessage());
+            throw new RuntimeException("Action execution failed", e);
+        }
+    }

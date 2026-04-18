@@ -1,0 +1,454 @@
+﻿import { useState, useEffect } from 'react';
+import { List, Select, Space, Tag, Card, Progress, Button, Empty, Spin, Modal, Checkbox } from 'antd';
+import { WarningOutlined, BulbOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { toast } from 'react-toastify';
+import { useIssues } from '../hooks/useMetrics';
+import { useDiagnosis } from '../hooks/useDiagnosis';
+import { AIAnalysisCard } from '../components/AIAnalysisCard';
+import { RemediationPlanner } from '../components/RemediationPlanner';
+import { RulePreviewModal } from '../components/RulePreviewModal';
+import { rulesApi } from '../api/rules';
+import type { DiagnosticIssue, Severity, CompleteDiagnosisReport } from '../types';
+import type { RuleExecutionPreview, RuleEvaluation } from '../api/rules';
+
+interface IssueProgress {
+  analyzed: boolean;
+  evaluated: boolean;
+  previewed: boolean;
+  executed: boolean;
+}
+
+/**
+ * Page displaying all diagnostic issues
+ */
+const IssuesPage: React.FC = () => {
+  const { data: issues, isLoading, error } = useIssues();
+  const [filter, setFilter] = useState<string>('all');
+  const [analyzingIssueId, setAnalyzingIssueId] = useState<number | null>(null);
+  const [diagnosisReport, setDiagnosisReport] = useState<CompleteDiagnosisReport | null>(null);
+  const [activeDiagnosisIssue, setActiveDiagnosisIssue] = useState<DiagnosticIssue | null>(null);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [executing, setExecuting] = useState(false);
+  const [resolvingIssueId, setResolvingIssueId] = useState<number | null>(null);
+  const [issueProgress, setIssueProgress] = useState<Record<number, IssueProgress>>({});
+  const [ruleEvaluations, setRuleEvaluations] = useState<Record<number, RuleEvaluation>>({});
+  
+  // Rule preview state
+  const [previewModalVisible, setPreviewModalVisible] = useState(false);
+  const [rulePreview] = useState<RuleExecutionPreview | null>(null);
+  const [loadingPreview] = useState(false);
+
+  const diagnosisMutation = useDiagnosis();
+
+  const getIssueProgress = (issueId: number): IssueProgress => {
+    return issueProgress[issueId] || {
+      analyzed: false,
+      evaluated: false,
+      previewed: false,
+      executed: false,
+    };
+  };
+
+  const updateIssueProgress = (issueId: number, patch: Partial<IssueProgress>) => {
+    setIssueProgress((prev) => ({
+      ...prev,
+      [issueId]: {
+        ...getIssueProgress(issueId),
+        ...patch,
+      },
+    }));
+  };
+
+  const filteredIssues = issues?.filter((i) =>
+    filter === 'all' || i.type === filter
+  ) || [];
+
+  const severityColor: Record<Severity, string> = {
+    LOW: 'blue',
+    MEDIUM: 'orange',
+    HIGH: 'red',
+    CRITICAL: 'purple',
+  };
+
+  const getDurationMinutes = (issue: DiagnosticIssue): number => {
+    const start = new Date(issue.detectedAt).getTime();
+    const end = issue.lastSeenAt ? new Date(issue.lastSeenAt).getTime() : Date.now();
+    return Math.max(0, Math.round((end - start) / 60000));
+  };
+
+  const handleAnalyze = async (issueId: number) => {
+    const selectedIssue = issues?.find((issue) => issue.id === issueId) || null;
+    setActiveDiagnosisIssue(selectedIssue);
+    setAnalyzingIssueId(issueId);
+    toast.info('Sending to AI for analysis...', { autoClose: 3000 });
+    
+    try {
+      const report = await diagnosisMutation.mutateAsync(issueId);
+      setDiagnosisReport(report);
+      setModalVisible(true);
+      
+      if (report.success) {
+        updateIssueProgress(issueId, { analyzed: true });
+        toast.success(
+          `AI analysis complete! Confidence: ${Math.round(report.confidence * 100)}%`,
+          { autoClose: 5000 }
+        );
+      } else {
+        toast.warning(`Analysis completed with issues: ${report.message}`, { autoClose: 5000 });
+      }
+    } catch (error) {
+      toast.error('Failed to analyze issue. Please try again.');
+      console.error('Diagnosis error:', error);
+    } finally {
+      setAnalyzingIssueId(null);
+    }
+  };
+
+  const handleResolve = async (issue: DiagnosticIssue) => {
+    if (!issue.id) return;
+
+    setResolvingIssueId(issue.id);
+    try {
+      // Get evaluation for recommended action
+      const evaluation = await rulesApi.getEvaluation(issue.id);
+      setRuleEvaluations((prev) => ({
+        ...prev,
+        [issue.id!]: evaluation,
+      }));
+      updateIssueProgress(issue.id, { evaluated: true });
+
+      const isLowConfidence = issue.confidence < 0.8;
+      const requiresPermission = isLowConfidence || evaluation.protectedProcess || evaluation.requiresApproval;
+
+      const executeAction = async () => {
+        try {
+          toast.info('Executing remediation...', { autoClose: 2000 });
+          const result: any = await rulesApi.execute(issue.id!, evaluation.recommendedAction, false);
+          
+          if (result && result.success === false) {
+            toast.warning(`Execution failed or blocked: ${result.message || 'Safety Policy'}`, { autoClose: 5000 });
+            return;
+          }
+
+          updateIssueProgress(issue.id!, { executed: true });
+          toast.success('Remediation executed successfully!', { autoClose: 5000 });
+        } catch (error: any) {
+          toast.error(`Execution failed: ${error?.response?.data?.message || error.message}`);
+          console.error(error);
+        }
+      };
+
+      if (requiresPermission) {
+        Modal.confirm({
+          title: 'Permission Required for Remediation',
+          content: `Confidence is low (${Math.round(issue.confidence * 100)}%) or the process is protected. Do you want to proceed with: ${evaluation.recommendedAction.replace(/_/g, ' ')}?`,
+          okText: 'Yes, Execute',
+          cancelText: 'Cancel',
+          onOk: executeAction,
+        });
+      } else {
+        await executeAction();
+      }
+    } catch (error) {
+      toast.error('Failed to resolve issue.');
+      console.error(error);
+    } finally {
+      setResolvingIssueId(null);
+    }
+  };
+
+  const handleCloseModal = () => {
+    setModalVisible(false);
+    setDiagnosisReport(null);
+    setActiveDiagnosisIssue(null);
+  };
+
+  const handleExecuteRemediation = async () => {
+    if (!diagnosisReport) return;
+    
+    setExecuting(true);
+    try {
+      await rulesApi.execute(
+        diagnosisReport.issueId,
+        diagnosisReport.remediationPlan?.primaryAction || 'UNKNOWN_ACTION',
+        false
+      );
+      toast.success('Remediation executed successfully!', { autoClose: 5000 });
+      handleCloseModal();
+    } catch (error) {
+      toast.error('Failed to execute remediation');
+      console.error('Execution error:', error);
+    } finally {
+      setExecuting(false);
+    }
+  };
+
+  const handleRequestApproval = async () => {
+    if (!diagnosisReport) return;
+
+    try {
+      await rulesApi.requestApproval(
+        diagnosisReport.issueId,
+        diagnosisReport.remediationPlan?.primaryAction || 'UNKNOWN_ACTION',
+        'User requested approval from dashboard'
+      );
+      toast.info('Approval request submitted. An administrator will review.', { autoClose: 5000 });
+    } catch (error) {
+       toast.error('Failed to request approval.');
+    }
+  };
+
+  const handleApproveAndExecute = async () => {
+    if (!rulePreview) return;
+    
+    toast.info('Executing remediation plan...', { autoClose: 3000 });
+    setPreviewModalVisible(false);
+    
+    try {
+      await rulesApi.execute(
+        rulePreview.issueId,
+        rulePreview.primaryAction,
+        false
+      );
+      updateIssueProgress(rulePreview.issueId, { executed: true });
+      toast.success('Remediation plan executed successfully!', { autoClose: 5000 });
+    } catch (error) {
+       toast.error('Execution failed');
+       console.error(error);
+    }
+  };
+
+  const handleDryRun = async () => {
+    if (!rulePreview) return;
+    toast.info('Running in dry-run mode (simulation only)', { autoClose: 5000 });
+    setPreviewModalVisible(false);
+
+    try {
+      await rulesApi.execute(
+        rulePreview.issueId,
+        rulePreview.primaryAction,
+        true
+      );
+      toast.success('Dry run simulation completed successfully!');
+    } catch (error) {
+      toast.error('Simulation failed');
+    }
+  };
+
+  useEffect(() => {
+    if (!issues) return;
+    // We moved notifications to AppHeader to avoid side popups
+  }, [issues]);
+  if (isLoading) {
+    return (
+      <div style={{ textAlign: 'center', padding: '100px' }}>
+        <Spin size="large" tip="Loading issues..." />
+      </div>
+    );
+  }
+
+  if (error) {
+    return <Empty description="Failed to load issues" />;
+  }
+
+  return (
+    <div>
+      <Space style={{ marginBottom: 16 }}>
+        <Select value={filter} onChange={setFilter} style={{ width: 250 }}>
+          <Select.Option value="all">All Issues</Select.Option>
+          <Select.Option value="MEMORY_LEAK">Memory Leaks</Select.Option>
+          <Select.Option value="THREAD_EXPLOSION">Thread Issues</Select.Option>
+          <Select.Option value="HUNG_PROCESS">Hung Processes</Select.Option>
+          <Select.Option value="IO_BOTTLENECK">I/O Bottlenecks</Select.Option>
+          <Select.Option value="RESOURCE_HOG">Resource Hogs</Select.Option>
+        </Select>
+      </Space>
+
+      {filteredIssues.length === 0 ? (
+        <Empty description="No issues found" />
+      ) : (
+        <List
+          dataSource={filteredIssues}
+          renderItem={(issue: DiagnosticIssue) => (
+            <List.Item>
+              {(() => {
+                const progress = issue.id ? getIssueProgress(issue.id) : {
+                  analyzed: false,
+                  evaluated: false,
+                  previewed: false,
+                  executed: false,
+                };
+                const evaluation = issue.id ? ruleEvaluations[issue.id] : undefined;
+                return (
+              <Card
+                style={{ width: '100%' }}
+                title={
+                  <Space>
+                    <WarningOutlined />
+                    <span>{issue.type.replace(/_/g, ' ')}</span>
+                    <Tag color={severityColor[issue.severity]}>
+                      {issue.severity}
+                    </Tag>
+                  </Space>
+                }
+              >
+                <p>
+                  <strong>Process:</strong> {issue.processName} (PID: {issue.affectedPid})
+                </p>
+                <p>
+                  <strong>Detected:</strong>{' '}
+                  {new Date(issue.detectedAt).toLocaleString()}
+                </p>
+                <Space wrap style={{ marginBottom: 8 }}>
+                  <Tag color={issue.status === 'NEW' ? 'blue' : issue.status === 'ACTIVE' ? 'green' : issue.status === 'IGNORED' ? 'default' : 'orange'}>
+                    Status: {issue.status || 'ACTIVE'}
+                  </Tag>
+                  <Tag color="cyan">Detected: {issue.occurrenceCount || 1} times</Tag>
+                  <Tag color="geekblue">Duration: {getDurationMinutes(issue)} min</Tag>
+                  <Tag color="purple">Stability: {issue.stabilityScore ?? Math.round(issue.confidence * 100)}%</Tag>
+                  {issue.remediationTaken && <Tag color="volcano">Remediation Applied</Tag>}
+                </Space>
+                <p>
+                  <strong>Confidence:</strong>
+                </p>
+                <Progress
+                  percent={Math.round(issue.confidence * 100)}
+                  status={issue.confidence > 0.8 ? 'success' : 'normal'}
+                />
+                <p>{issue.details}</p>
+                {issue.evidence && issue.evidence.trim().length > 0 && (
+                  <Card size="small" style={{ marginBottom: 12 }} title="Aggregated Evidence">
+                    <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
+                      {issue.evidence}
+                    </pre>
+                  </Card>
+                )}
+                <Space direction="vertical" style={{ marginBottom: 12 }}>
+                  <Checkbox checked disabled>
+                    Issue detected
+                  </Checkbox>
+                  <Checkbox checked={progress.analyzed} disabled>
+                    AI analyzed
+                  </Checkbox>
+                  <Checkbox checked={progress.evaluated} disabled>
+                    Rule evaluated
+                  </Checkbox>
+                  <Checkbox checked={progress.previewed} disabled>
+                    Action previewed
+                  </Checkbox>
+                  <Checkbox checked={progress.executed} disabled>
+                    Remediation executed
+                  </Checkbox>
+                </Space>
+
+                {evaluation && (
+                  <Card size="small" style={{ marginBottom: 12 }}>
+                    <Space wrap>
+                      <Tag color="blue">Rule Confidence {Math.round(evaluation.confidence * 100)}%</Tag>
+                      <Tag color={evaluation.policyBlocked ? 'red' : 'green'}>
+                        {evaluation.policyBlocked ? 'Policy Blocked' : 'Policy OK'}
+                      </Tag>
+                      <Tag color={evaluation.requiresApproval ? 'orange' : 'green'}>
+                        {evaluation.requiresApproval ? 'Approval Required' : 'No Approval Needed'}
+                      </Tag>
+                      <Tag color="purple">Action {evaluation.recommendedAction.replace(/_/g, ' ')}</Tag>
+                    </Space>
+                  </Card>
+                )}
+
+                <Space>
+                  
+                  <Button
+                    type="primary"
+                    danger
+                    icon={<CheckCircleOutlined />}
+                    loading={resolvingIssueId === issue.id}
+                    onClick={() => issue && handleResolve(issue)}
+                  >
+                    {resolvingIssueId === issue.id ? 'Resolving...' : 'Resolve'}
+                  </Button>
+                </Space>
+              </Card>
+                );
+              })()}
+            </List.Item>
+          )}
+        />
+      )}
+
+      {/* AI Diagnosis Result Modal */}
+      <Modal
+        title={
+          <Space>
+            <BulbOutlined style={{ color: '#1890ff' }} />
+            AI Diagnosis Report
+          </Space>
+        }
+        open={modalVisible}
+        onCancel={handleCloseModal}
+        footer={[
+          <Button key="close" onClick={handleCloseModal}>
+            Close
+          </Button>,
+        ]}
+        width={900}
+      >
+        {diagnosisReport && (
+          <div>
+            {/* Success/Failure Status */}
+            <Card size="small" style={{ marginBottom: 16 }}>
+              <Space>
+                <CheckCircleOutlined
+                  style={{ color: diagnosisReport.success ? '#52c41a' : '#ff4d4f', fontSize: 24 }}
+                />
+                <div>
+                  <div style={{ fontWeight: 'bold' }}>
+                    {diagnosisReport.success ? 'Diagnosis Successful' : 'Diagnosis Failed'}
+                  </div>
+                  <div style={{ color: '#666' }}>
+                    {diagnosisReport.message} â€¢ Processing time: {diagnosisReport.processingTimeMs}ms
+                  </div>
+                </div>
+              </Space>
+            </Card>
+
+            {/* AI Analysis Card */}
+            {diagnosisReport.analysis && (
+              <AIAnalysisCard
+                analysis={diagnosisReport.analysis}
+                issueType={activeDiagnosisIssue?.type}
+              />
+            )}
+
+            {/* Remediation Planner with AI confidence-based controls */}
+            {diagnosisReport.remediationPlan && diagnosisReport.safetyValidation && diagnosisReport.analysis && (
+              <div style={{ marginTop: 16 }}>
+                <RemediationPlanner
+                  analysis={diagnosisReport.analysis}
+                  remediationPlan={diagnosisReport.remediationPlan}
+                  safetyValidation={diagnosisReport.safetyValidation}
+                  confidence={diagnosisReport.confidence}
+                  onExecute={handleExecuteRemediation}
+                  onRequestApproval={handleRequestApproval}
+                  executing={executing}
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* Rule Execution Preview Modal */}
+      <RulePreviewModal
+        visible={previewModalVisible}
+        preview={rulePreview}
+        loading={loadingPreview}
+        onApprove={handleApproveAndExecute}
+        onCancel={() => setPreviewModalVisible(false)}
+        onDryRun={handleDryRun}
+      />
+    </div>
+  );
+};
+
+export default IssuesPage;

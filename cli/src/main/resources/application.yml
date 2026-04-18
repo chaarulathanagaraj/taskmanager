@@ -1,0 +1,41 @@
+# AIOS CLI Configuration
+spring:
+  application:
+    name: aios-cli
+  main:
+    banner-mode: off
+
+# MCP Server configuration
+mcp:
+  server:
+    url: http://localhost:8081
+
+# API Key for MCP authentication
+aios:
+  mcp:
+    api-key: ${MCP_API_KEY:}
+
+# Backend server configuration
+backend:
+  server:
+    url: http://localhost:8080
+
+# OpenAI configuration (optional - rule-based fallback used if not set)
+# openai:
+#   api-key: your-api-key-here
+
+# Shell prompt customization
+spring.shell:
+  interactive:
+    enabled: true
+  command:
+    help:
+      enabled: true
+
+# Logging
+logging:
+  level:
+    root: WARN
+    com.aios: INFO
+  pattern:
+    console: "%d{HH:mm:ss} [%level] %msg%n"

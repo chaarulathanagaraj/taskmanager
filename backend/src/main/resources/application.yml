@@ -1,0 +1,118 @@
+spring:
+  application:
+    name: aios-backend
+
+  # Database Configuration
+  datasource:
+    url: jdbc:h2:mem:aios
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+    # For PostgreSQL (production)
+    # url: jdbc:postgresql://localhost:5432/aios
+    # driver-class-name: org.postgresql.Driver
+    # username: aios_user
+    # password: your_password_here
+
+  # JPA Configuration
+  jpa:
+    hibernate:
+      ddl-auto: create-drop # Use 'validate' or 'none' in production
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        # For PostgreSQL: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        use_sql_comments: true
+
+  # H2 Console (for development only)
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  # Jackson JSON Configuration
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: non_null
+
+# Server Configuration
+server:
+  port: 8080
+  servlet:
+    context-path: /
+  error:
+    include-message: always
+    include-binding-errors: always
+
+# External Services
+external:
+  agent:
+    url: http://localhost:8081
+  mcp-server:
+    url: http://localhost:8082
+
+# MCP Configuration (for ai-agents module)
+mcp:
+  server:
+    url: http://localhost:8082
+  api:
+    key: ${MCP_API_KEY:}
+
+# Logging Configuration
+logging:
+  level:
+    root: INFO
+    com.aios: DEBUG
+    org.springframework.web: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+  file:
+    name: logs/aios-backend.log
+
+# SpringDoc OpenAPI Configuration
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: alpha
+  show-actuator: true
+
+# Management Endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always
+    metrics:
+      enabled: true
+  metrics:
+    tags:
+      application: aios-backend
+    export:
+      prometheus:
+        enabled: true
+
+# Application-specific Configuration
+aios:
+  cleanup:
+    metrics-retention-days: 7
+    issues-retention-days: 30
+    actions-retention-days: 7
+  websocket:
+    allowed-origins: "*"
+  agent:
+    url: http://localhost:8081
+  mcp:
+    url: http://localhost:8082
+    api-key: ${MCP_API_KEY:}
