@@ -172,7 +172,7 @@ public class DetectorManager {
                 activeIssues.put(key, issue);
                 log.warn("NEW ISSUE: {} - {} (PID: {}, Confidence: {:.0f}%)",
                         issue.getType(), issue.getProcessName(),
-                        issue.getAffectedPid(), issue.getConfidence() * 100);
+                        issue.getAffectedPid(), Math.round(issue.getConfidence() * 100));
 
                 // Queue issue for backend sync
                 backendClient.queueIssue(issue);
@@ -183,7 +183,8 @@ public class DetectorManager {
                     activeIssues.put(key, issue);
                     log.debug("UPDATED ISSUE: {} - {} (Confidence: {:.0f}% -> {:.0f}%)",
                             issue.getType(), issue.getProcessName(),
-                            existing.getConfidence() * 100, issue.getConfidence() * 100);
+                            Math.round(existing.getConfidence() * 100),
+                            Math.round(issue.getConfidence() * 100));
 
                     // Queue updated issue for backend sync
                     backendClient.queueIssue(issue);

@@ -118,7 +118,14 @@ public class AgentSettings {
                         "code.exe",
                         "Code.exe",
                         "Code - Insiders.exe",
-                        "devenv.exe"))
+                        "devenv.exe",
+                        "java.exe",
+                        "javaw.exe",
+                        "node.exe",
+                        "powershell.exe",
+                        "pwsh.exe",
+                        "cmd.exe",
+                        "conhost.exe"))
                 .notifyOnCritical(true)
                 .notifyOnHigh(true)
                 .backendUrl("http://localhost:8080")

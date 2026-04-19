@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Select, Space, Tag, Card, Progress, Button, Empty, Spin, Modal, Row, Col, Typography } from 'antd';
 import { WarningOutlined, BulbOutlined, CheckCircleOutlined } from '@ant-design/icons';
@@ -29,6 +29,36 @@ interface FriendlyProcessInfo {
   priorityHint: string;
 }
 
+interface ResolutionFeedback {
+  verificationPassed: boolean;
+  verificationMessage: string;
+  failureCategory?: string;
+  explanation?: string;
+  retryable?: boolean;
+  actionType?: string;
+}
+
+const CRITICAL_PROCESS_NAMES = new Set([
+  'system',
+  'smss',
+  'csrss',
+  'wininit',
+  'services',
+  'lsass',
+  'winlogon',
+  'svchost',
+  'dwm',
+  'explorer',
+  'registry',
+  'memory compression',
+]);
+
+const normalizeProcessName = (value: string): string =>
+  (value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\.exe$/i, '');
+
 /**
  * Page displaying all diagnostic issues
  */
@@ -41,7 +71,9 @@ const IssuesPage: React.FC = () => {
   const [executing, setExecuting] = useState(false);
   const [automatingAll, setAutomatingAll] = useState(false);
   const [selectedSafeIssueIds, setSelectedSafeIssueIds] = useState<number[]>([]);
+  const [hasManualSelection, setHasManualSelection] = useState(false);
   const [resolvingIssueId, setResolvingIssueId] = useState<number | null>(null);
+  const [resolutionFeedbackByIssue, setResolutionFeedbackByIssue] = useState<Record<number, ResolutionFeedback>>({});
   const [protectedPatterns, setProtectedPatterns] = useState<string[]>([]);
   const [runtimeSettings, setRuntimeSettings] = useState({
     dryRunMode: true,
@@ -199,11 +231,24 @@ const IssuesPage: React.FC = () => {
 
   const isIssueProtected = (issue: DiagnosticIssue): boolean => {
     const name = (issue.processName || '').trim();
-    if (!name || protectedPatterns.length === 0) return false;
+    if (!name) return false;
+    const normalizedName = normalizeProcessName(name);
+    if (CRITICAL_PROCESS_NAMES.has(normalizedName)) {
+      return true;
+    }
+    if (protectedPatterns.length === 0) return false;
     return protectedPatterns.some((pattern) => globToRegex(pattern).test(name));
   };
 
   const selectableIssues = filteredIssues.filter((i) => Boolean(i.id));
+  const sortedSelectableIssues = useMemo(() => {
+    return [...selectableIssues].sort((a, b) => {
+      const aSafe = !isIssueProtected(a);
+      const bSafe = !isIssueProtected(b);
+      if (aSafe !== bSafe) return aSafe ? -1 : 1;
+      return a.affectedPid - b.affectedPid;
+    });
+  }, [selectableIssues, protectedPatterns]);
 
   const severityColor: Record<Severity, string> = {
     LOW: 'blue',
@@ -224,21 +269,36 @@ const IssuesPage: React.FC = () => {
       && (message.includes('lock active') || message.includes('already resolved'));
   };
 
-  const markIssueResolved = async (issueId: number): Promise<boolean> => {
+  const verifyIssueResolution = async (issueId: number): Promise<boolean> => {
     try {
-      await issuesApi.resolveIssue(issueId);
-      return true;
-    } catch (firstError) {
-      console.warn('First resolve attempt failed, retrying once', firstError);
-
-      try {
-        await issuesApi.resolveIssue(issueId);
-        return true;
-      } catch (secondError) {
-        console.error('Failed to auto-mark issue resolved after remediation', secondError);
-        return false;
-      }
+      const issue = await issuesApi.getById(issueId);
+      const data = issue.data;
+      return Boolean(data?.resolved) || data?.status === 'RESOLVED';
+    } catch (error) {
+      console.error('Failed to verify issue resolution', error);
+      return false;
     }
+  };
+
+  const getResolutionFeedback = (result: any, defaultMessage: string): ResolutionFeedback => {
+    const details = result?.executionDetails || {};
+    const verificationMessage = details?.verificationMessage || result?.message || defaultMessage;
+    const diagnostics = details?.failureDiagnostics || {};
+    return {
+      verificationPassed: Boolean(details?.resolutionVerified),
+      verificationMessage,
+      failureCategory: diagnostics?.failureCategory,
+      explanation: diagnostics?.explanation,
+      retryable: diagnostics?.retryable,
+      actionType: diagnostics?.actionType || result?.actionType,
+    };
+  };
+
+  const storeResolutionFeedback = (issueId: number, feedback: ResolutionFeedback) => {
+    setResolutionFeedbackByIssue((prev) => ({
+      ...prev,
+      [issueId]: feedback,
+    }));
   };
 
   const refreshRuntimeSettings = async () => {
@@ -289,11 +349,14 @@ const IssuesPage: React.FC = () => {
             return;
           }
 
+          const feedback = getResolutionFeedback(result, 'Remediation executed but verification is unavailable.');
+          storeResolutionFeedback(issue.id!, feedback);
+
           if (result && result.success === false) {
             if (isCooldownOrAlreadyResolved(result)) {
               toast.info(result.message || 'This issue was already handled recently.', { autoClose: 5000 });
             } else {
-              toast.warning(`Execution failed or blocked: ${result.message || 'Safety Policy'}`, { autoClose: 5000 });
+              toast.warning(feedback.explanation || feedback.verificationMessage || result.message || 'Execution failed.', { autoClose: 6000 });
             }
             return;
           }
@@ -309,13 +372,18 @@ const IssuesPage: React.FC = () => {
             return;
           }
 
-          const resolved = await markIssueResolved(issue.id!);
-          toast.info(
-            resolved
-              ? 'Remediation executed and issue marked as resolved.'
-              : (result?.message || 'Remediation executed. Resolution sync failed, but automation completed.'),
-            { autoClose: 5000 }
-          );
+          const verifiedResolved = await verifyIssueResolution(issue.id!);
+          storeResolutionFeedback(issue.id!, {
+            ...feedback,
+            verificationPassed: verifiedResolved,
+            verificationMessage: verifiedResolved
+              ? 'Resolution verified successfully.'
+              : (feedback.explanation || feedback.verificationMessage || 'Issue remains unresolved after action.'),
+          });
+          toast.info(verifiedResolved
+            ? 'Remediation executed and verified as resolved.'
+            : (feedback.explanation || 'Remediation executed, but the issue is still unresolved.'),
+          { autoClose: 6000 });
           queryClient.invalidateQueries({ queryKey: ['issues'] });
           queryClient.invalidateQueries({ queryKey: ['dashboard'] });
         } catch (error: any) {
@@ -359,22 +427,22 @@ const IssuesPage: React.FC = () => {
         diagnosisReport.remediationPlan?.primaryAction || 'UNKNOWN_ACTION',
         (await refreshRuntimeSettings()).dryRunMode
       );
+      const feedback = getResolutionFeedback(result, 'Remediation execution finished without verification details.');
+      storeResolutionFeedback(diagnosisReport.issueId, feedback);
       
       // Only proceed if execution was successful
       if (result?.success === true) {
-        const resolved = await markIssueResolved(diagnosisReport.issueId);
+        const resolved = await verifyIssueResolution(diagnosisReport.issueId);
         toast.info(
           resolved
-            ? 'Remediation executed successfully and issue marked as resolved.'
-            : 'Remediation executed successfully. Failed to mark resolved, but action was completed.',
+            ? 'Remediation executed successfully and resolution was verified.'
+            : (feedback.explanation || 'Remediation executed successfully but the issue is still unresolved.'),
           { autoClose: 5000 }
         );
       } else if (result && result.success === false && isCooldownOrAlreadyResolved(result)) {
         toast.info(result.message || 'This issue was already handled recently.', { autoClose: 5000 });
       } else {
-        toast.error(
-          result?.message || 'Remediation execution failed. Issue not marked as resolved.'
-        );
+        toast.error(feedback.explanation || feedback.verificationMessage || result?.message || 'Remediation execution failed.');
       }
       queryClient.invalidateQueries({ queryKey: ['issues'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
@@ -421,22 +489,22 @@ const IssuesPage: React.FC = () => {
         effectiveDryRun
       );
       updateIssueProgress(rulePreview.issueId, { executed: true });
+      const feedback = getResolutionFeedback(result, 'Execution completed without verification details.');
+      storeResolutionFeedback(rulePreview.issueId, feedback);
       
       // Only proceed if execution was successful
       if (result?.success === true) {
-        const resolved = await markIssueResolved(rulePreview.issueId);
+        const resolved = await verifyIssueResolution(rulePreview.issueId);
         toast.info(
           resolved
-            ? 'Remediation executed successfully and issue marked as resolved.'
-            : 'Remediation executed successfully. Failed to mark resolved, but action was completed.',
+            ? 'Remediation executed successfully and resolution was verified.'
+            : (feedback.explanation || 'Remediation executed successfully but issue remains unresolved.'),
           { autoClose: 5000 }
         );
       } else if (result && result.success === false && isCooldownOrAlreadyResolved(result)) {
         toast.info(result.message || 'This issue was already handled recently.', { autoClose: 5000 });
       } else {
-        toast.error(
-          result?.message || 'Remediation execution failed. Issue not marked as resolved.'
-        );
+        toast.error(feedback.explanation || feedback.verificationMessage || result?.message || 'Remediation execution failed.');
       }
       queryClient.invalidateQueries({ queryKey: ['issues'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
@@ -466,7 +534,10 @@ const IssuesPage: React.FC = () => {
   const showBulkAutomationSummary = (result: BulkAutomationResult) => {
     const protectedOutcomes = result.outcomes.filter((o) => o.status === 'SKIPPED_PROTECTED');
     const resolvedOutcomes = result.outcomes.filter((o) => o.status === 'RESOLVED');
+    const automatedOutcomes = result.outcomes.filter((o) => o.status === 'AUTOMATED');
     const simulatedOutcomes = result.outcomes.filter((o) => o.status === 'SIMULATED');
+    const needsManualReviewOutcomes = result.outcomes.filter((o) => o.status === 'NEEDS_MANUAL_REVIEW');
+    const needsAttentionOutcomes = result.outcomes.filter((o) => o.status === 'NEEDS_ATTENTION');
     const failedOutcomes = result.outcomes.filter((o) => o.status === 'FAILED' || o.status === 'ERROR');
 
     Modal.info({
@@ -475,10 +546,10 @@ const IssuesPage: React.FC = () => {
       content: (
         <div>
           <p><strong>Total active:</strong> {result.totalActive}</p>
-          <p><strong>Automated:</strong> {result.automated}</p>
           <p><strong>Resolved:</strong> {result.resolved}</p>
-          <p><strong>Simulated (dry-run):</strong> {simulatedOutcomes.length}</p>
-          <p><strong>Skipped protected:</strong> {result.skippedProtected}</p>
+          <p><strong>Automated (attempted):</strong> {result.automated}</p>
+          {result.needsManualReview > 0 && <p><strong>Needs manual review:</strong> {result.needsManualReview}</p>}
+          <p><strong>Skipped (protected):</strong> {result.skippedProtected}</p>
           <p><strong>Failed:</strong> {result.failed}</p>
 
           <Row gutter={16}>
@@ -490,7 +561,7 @@ const IssuesPage: React.FC = () => {
                   <ul style={{ margin: 0, paddingLeft: 20 }}>
                     {protectedOutcomes.map((item) => (
                       <li key={item.issueId}>
-                        #{item.issueId} {item.processName} (PID {item.affectedPid})
+                        #{item.issueId} {item.processName} (PID {item.affectedPid}): {item.message}
                       </li>
                     ))}
                   </ul>
@@ -498,14 +569,50 @@ const IssuesPage: React.FC = () => {
               </Card>
             </Col>
             <Col span={12}>
-              <Card size="small" title={`Selected Processes - Resolved ${resolvedOutcomes.length}, Failed ${failedOutcomes.length}`}>
+              <Card size="small" title={`Selected Processes - Resolved ${resolvedOutcomes.length}, Automated ${automatedOutcomes.length}, Needs Review ${needsManualReviewOutcomes.length}, Failed ${failedOutcomes.length}`}>
                 {resolvedOutcomes.length > 0 && (
                   <div style={{ marginBottom: 8 }}>
-                    <strong>Resolved</strong>
+                    <strong>✓ Resolved</strong>
                     <ul style={{ margin: 0, paddingLeft: 20 }}>
                       {resolvedOutcomes.map((item) => (
                         <li key={item.issueId}>
                           #{item.issueId} {item.processName} ({item.action || 'ACTION'})
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {automatedOutcomes.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <strong>⚙ Automated (attempted)</strong>
+                    <ul style={{ margin: 0, paddingLeft: 20 }}>
+                      {automatedOutcomes.map((item) => (
+                        <li key={item.issueId}>
+                          #{item.issueId} {item.processName} ({item.action}): {item.message}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {needsAttentionOutcomes.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <strong>⚠ Needs Attention</strong>
+                    <ul style={{ margin: 0, paddingLeft: 20 }}>
+                      {needsAttentionOutcomes.map((item) => (
+                        <li key={item.issueId}>
+                          #{item.issueId} {item.processName}: {item.message}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {needsManualReviewOutcomes.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <strong>🔍 Needs Manual Review</strong>
+                    <ul style={{ margin: 0, paddingLeft: 20 }}>
+                      {needsManualReviewOutcomes.map((item) => (
+                        <li key={item.issueId}>
+                          #{item.issueId} {item.processName}: {item.message}
                         </li>
                       ))}
                     </ul>
@@ -525,7 +632,7 @@ const IssuesPage: React.FC = () => {
                 )}
                 {failedOutcomes.length > 0 && (
                   <div>
-                    <strong>Auto-Failed</strong>
+                    <strong>❌ Failed</strong>
                     <ul style={{ margin: 0, paddingLeft: 20 }}>
                       {failedOutcomes.map((item) => (
                         <li key={item.issueId}>
@@ -535,7 +642,7 @@ const IssuesPage: React.FC = () => {
                     </ul>
                   </div>
                 )}
-                {resolvedOutcomes.length === 0 && failedOutcomes.length === 0 && (
+                {resolvedOutcomes.length === 0 && automatedOutcomes.length === 0 && failedOutcomes.length === 0 && needsManualReviewOutcomes.length === 0 && (
                   <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No automatable outcomes" />
                 )}
               </Card>
@@ -583,94 +690,28 @@ const IssuesPage: React.FC = () => {
             toast.info('Global dry-run is enabled. Bulk automation will be simulated only.', { autoClose: 5000 });
           }
 
-          const outcomes: BulkAutomationOutcome[] = await Promise.all(selectedIssues.map(async (issue): Promise<BulkAutomationOutcome> => {
-            try {
-              if (isIssueProtected(issue)) {
-                return {
-                  issueId: issue.id!,
-                  processName: issue.processName,
-                  affectedPid: issue.affectedPid,
-                  issueType: issue.type,
-                  status: 'SKIPPED_PROTECTED',
-                  message: 'Not safe for automation due to protected-process policy',
-                };
-              }
-
-              const preview = await rulesApi.getPreview(issue.id!);
-              const execution: any = await rulesApi.execute(issue.id!, preview.primaryAction, latestSettings.dryRunMode);
-
-              if (execution?.status === 'PENDING') {
-                return {
-                  issueId: issue.id!,
-                  processName: issue.processName,
-                  affectedPid: issue.affectedPid,
-                  issueType: issue.type,
-                  action: preview.primaryAction,
-                  status: 'FAILED',
-                  message: execution.message || 'Approval required before execution can continue',
-                };
-              }
-
-              if (!execution || execution.success === false) {
-                return {
-                  issueId: issue.id!,
-                  processName: issue.processName,
-                  affectedPid: issue.affectedPid,
-                  issueType: issue.type,
-                  action: preview.primaryAction,
-                  status: 'FAILED',
-                  message: execution?.message || 'Execution failed',
-                };
-              }
-
-              if (latestSettings.dryRunMode) {
-                return {
-                  issueId: issue.id!,
-                  processName: issue.processName,
-                  affectedPid: issue.affectedPid,
-                  issueType: issue.type,
-                  action: preview.primaryAction,
-                  status: 'SIMULATED',
-                  message: 'Dry-run simulation completed',
-                };
-              }
-
-              const resolved = await markIssueResolved(issue.id!);
-              const status: 'RESOLVED' | 'FAILED' = resolved ? 'RESOLVED' : 'FAILED';
-              return {
-                issueId: issue.id!,
-                processName: issue.processName,
-                affectedPid: issue.affectedPid,
-                issueType: issue.type,
-                action: preview.primaryAction,
-                status,
-                message: resolved ? 'Remediation executed and issue marked resolved' : 'Executed but resolve API failed',
-              };
-            } catch (e: any) {
-              return {
-                issueId: issue.id!,
-                processName: issue.processName,
-                affectedPid: issue.affectedPid,
-                issueType: issue.type,
-                status: 'ERROR',
-                message: e?.response?.data?.message || e?.message || 'Automation error',
-              };
-            }
-          }));
+          // Use backend-side orchestration to avoid UI-triggered request storms and timeout cascades.
+          const backendResult = await rulesApi.automateAllSafeIssues();
+          const selectedIssueIdSet = new Set(selectedIssues.map((i) => i.id as number));
+          const outcomes: BulkAutomationOutcome[] = backendResult.outcomes.filter((o) => selectedIssueIdSet.has(o.issueId));
 
           const result: BulkAutomationResult = {
             totalActive: selectedIssues.length,
-            automated: outcomes.filter((o) => o.status === 'RESOLVED' || o.status === 'SIMULATED').length,
+            automated: outcomes.filter((o) => o.status === 'RESOLVED' || o.status === 'AUTOMATED' || o.status === 'SIMULATED').length,
             resolved: outcomes.filter((o) => o.status === 'RESOLVED').length,
             skippedProtected: outcomes.filter((o) => o.status === 'SKIPPED_PROTECTED').length,
+            needsManualReview: outcomes.filter((o) => o.status === 'NEEDS_MANUAL_REVIEW').length,
             failed: outcomes.filter((o) => o.status === 'FAILED' || o.status === 'ERROR').length,
             outcomes,
           };
 
           const simulated = outcomes.filter((o) => o.status === 'SIMULATED').length;
-          toast.success(`Automation complete. Resolved: ${result.resolved}, Simulated: ${simulated}, Not Safe Skipped: ${result.skippedProtected}, Failed: ${result.failed}.`);
+          const needsReview = outcomes.filter((o) => o.status === 'NEEDS_MANUAL_REVIEW').length;
+          const message = `Automation complete. Resolved: ${result.resolved}, Automated: ${result.automated}, Needs Review: ${needsReview}, Skipped: ${result.skippedProtected}, Failed: ${result.failed}.`;
+          toast.success(message);
           showBulkAutomationSummary(result);
           setSelectedSafeIssueIds([]);
+          setHasManualSelection(false);
           queryClient.invalidateQueries({ queryKey: ['issues'] });
           queryClient.invalidateQueries({ queryKey: ['dashboard'] });
         } catch (error: any) {
@@ -716,6 +757,29 @@ const IssuesPage: React.FC = () => {
 
     loadProtectedPatterns();
   }, []);
+
+  useEffect(() => {
+    if (sortedSelectableIssues.length === 0) {
+      setSelectedSafeIssueIds((prev) => (prev.length === 0 ? prev : []));
+      setHasManualSelection(false);
+      return;
+    }
+
+    if (hasManualSelection) {
+      return;
+    }
+
+    const autoSelectedSafe = sortedSelectableIssues
+      .filter((issue) => !isIssueProtected(issue) && Boolean(issue.id))
+      .map((issue) => issue.id as number);
+
+    setSelectedSafeIssueIds((prev) => {
+      if (prev.length === autoSelectedSafe.length && prev.every((id, idx) => id === autoSelectedSafe[idx])) {
+        return prev;
+      }
+      return autoSelectedSafe;
+    });
+  }, [sortedSelectableIssues, hasManualSelection]);
   if (isLoading) {
     return (
       <div style={{ textAlign: 'center', padding: '100px' }}>
@@ -750,42 +814,33 @@ const IssuesPage: React.FC = () => {
 
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col span={24}>
-          <Card size="small" title={`Choose Processes For Automation (${selectableIssues.length})`}>
+          <Card size="small" title={`Choose Processes For Automation (${sortedSelectableIssues.length})`}>
             <Space direction="vertical" style={{ width: '100%', marginBottom: 10 }}>
-              <Text type="secondary">Select one or more processes. Each process shows whether it is safe or not safe.</Text>
+              <Text type="secondary">Processes are ordered with safe entries first and safe ones are auto-selected by default.</Text>
               <Select
                 mode="multiple"
                 style={{ width: '100%' }}
                 placeholder="Choose one or more processes"
                 value={selectedSafeIssueIds}
-                onChange={(values) => setSelectedSafeIssueIds(values as number[])}
-                options={selectableIssues.map((issue) => {
-                  const safe = !isIssueProtected(issue);
+                maxTagCount={0}
+                maxTagPlaceholder={(omittedValues) => `${omittedValues.length} selected`}
+                onChange={(values) => {
+                  setHasManualSelection(true);
+                  setSelectedSafeIssueIds(values as number[]);
+                }}
+                options={sortedSelectableIssues.map((issue) => {
                   const processName = getFriendlyProcessInfo(issue.processName).displayName;
-                  const safetyLabel = safe ? 'SAFE' : 'NOT SAFE';
                   return {
                     value: issue.id!,
-                    label: `${processName} (PID ${issue.affectedPid}) - ${toReadableIssueType(issue.type)} [${safetyLabel}]`,
+                    label: `${processName} (PID ${issue.affectedPid})`,
                   };
                 })}
               />
             </Space>
-            {selectableIssues.length === 0 ? (
+            {sortedSelectableIssues.length === 0 ? (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No processes available in current filter" />
             ) : (
-              <ul style={{ margin: 0, paddingLeft: 20 }}>
-                {selectableIssues.map((issue) => {
-                  const safe = !isIssueProtected(issue);
-                  return (
-                    <li key={issue.id || `${issue.affectedPid}-${issue.type}`}>
-                      {getFriendlyProcessInfo(issue.processName).displayName} (PID {issue.affectedPid}) - {toReadableIssueType(issue.type)}{' '}
-                      <Tag color={safe ? 'green' : 'red'} style={{ marginLeft: 8 }}>
-                        {safe ? 'Safe' : 'Not Safe'}
-                      </Tag>
-                    </li>
-                  );
-                })}
-              </ul>
+              <Text type="secondary">{selectedSafeIssueIds.length} process(es) currently selected.</Text>
             )}
           </Card>
         </Col>
@@ -888,6 +943,33 @@ const IssuesPage: React.FC = () => {
                       {resolvingIssueId === issue.id ? 'Resolving...' : 'Resolve With Action'}
                     </Button>
                   </Space>
+
+                  {issue.id && resolutionFeedbackByIssue[issue.id] && (
+                    <Card
+                      size="small"
+                      style={{ marginTop: 12 }}
+                      title={resolutionFeedbackByIssue[issue.id].verificationPassed ? 'Resolution Verified' : 'Resolution Needs Attention'}
+                    >
+                      <Text type={resolutionFeedbackByIssue[issue.id].verificationPassed ? 'success' : 'warning'}>
+                        {resolutionFeedbackByIssue[issue.id].verificationMessage}
+                      </Text>
+                      {!resolutionFeedbackByIssue[issue.id].verificationPassed && resolutionFeedbackByIssue[issue.id].failureCategory && (
+                        <div style={{ marginTop: 8 }}>
+                          <Tag color="orange">{resolutionFeedbackByIssue[issue.id].failureCategory}</Tag>
+                          {resolutionFeedbackByIssue[issue.id].retryable !== undefined && (
+                            <Tag color={resolutionFeedbackByIssue[issue.id].retryable ? 'blue' : 'red'}>
+                              {resolutionFeedbackByIssue[issue.id].retryable ? 'Retryable' : 'Manual Action Required'}
+                            </Tag>
+                          )}
+                        </div>
+                      )}
+                      {!resolutionFeedbackByIssue[issue.id].verificationPassed && resolutionFeedbackByIssue[issue.id].explanation && (
+                        <div style={{ marginTop: 8 }}>
+                          <Text type="secondary">{resolutionFeedbackByIssue[issue.id].explanation}</Text>
+                        </div>
+                      )}
+                    </Card>
+                  )}
                 </Card>
               </Col>
             );

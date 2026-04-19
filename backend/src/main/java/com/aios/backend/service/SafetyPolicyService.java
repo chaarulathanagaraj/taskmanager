@@ -2,6 +2,7 @@ package com.aios.backend.service;
 
 import com.aios.backend.model.SafetyPolicyEntity;
 import com.aios.backend.repository.SafetyPolicyRepository;
+import com.aios.shared.client.AgentClient;
 import com.aios.shared.dto.PolicyViolation;
 import com.aios.shared.enums.ActionType;
 import com.aios.shared.enums.SafetyLevel;
@@ -17,6 +18,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -50,6 +52,21 @@ public class SafetyPolicyService {
 
     private final SafetyPolicyRepository policyRepository;
     private final SettingsService settingsService;
+    private final AgentClient agentClient;
+
+    private static final Set<String> DEV_PROCESS_NAMES = Set.of(
+            "java",
+            "javaw",
+            "node",
+            "npm",
+            "pnpm",
+            "yarn",
+            "powershell",
+            "pwsh",
+            "cmd",
+            "conhost",
+            "code",
+            "devenv");
 
     /**
      * Default protected system processes that should never be terminated.
@@ -62,6 +79,19 @@ public class SafetyPolicyService {
      */
     @Value("${aios.safety.enforce-policies:true}")
     private boolean enforcePolicies;
+
+    /**
+     * Whether active workspace-linked processes should be auto-protected.
+     */
+    @Value("${aios.safety.protect-active-workspace-processes:true}")
+    private boolean protectActiveWorkspaceProcesses;
+
+    /**
+     * Workspace markers used to identify development/runtime processes that should
+     * never be auto-remediated.
+     */
+    @Value("${aios.safety.workspace-markers:taskmanager,aios,backend,frontend,mcp-server,agent}")
+    private String workspaceMarkers;
 
     /**
      * Global dry-run mode setting.
@@ -127,6 +157,14 @@ public class SafetyPolicyService {
         if (settingsService.isProcessProtected(processName)) {
             log.warn("Blocked: {} is protected by current settings", processName);
             return PolicyViolation.protectedProcess(processName, pid, actionType);
+        }
+
+        // Check 1c: Active workspace/dev processes should never be auto-remediated.
+        if (isWorkspaceLinkedProcess(processName, pid)) {
+            log.warn("Blocked: {} (PID {}) appears to be an active workspace/dev process", processName, pid);
+            return PolicyViolation.protectedProcess(processName, pid, actionType)
+                    .addDetail("Protected by active-workspace guard")
+                    .addDetail("This process is related to current development/runtime workflow");
         }
 
         // Check 2: Get applicable policies for this action type
@@ -436,7 +474,17 @@ public class SafetyPolicyService {
      * Check if a process is protected (for RuleEngine).
      */
     public boolean isProtected(String processName) {
-        return isSystemProtectedProcess(processName) || settingsService.isProcessProtected(processName);
+        return isProtected(processName, null);
+    }
+
+    /**
+     * Check if a process is protected using name and optional PID context.
+     */
+    public boolean isProtected(String processName, Integer pid) {
+        int safePid = pid == null ? -1 : pid;
+        return isSystemProtectedProcess(processName)
+                || settingsService.isProcessProtected(processName)
+                || isWorkspaceLinkedProcess(processName, safePid);
     }
 
     /**
@@ -456,5 +504,50 @@ public class SafetyPolicyService {
             log.error("Error checking safety for action {}: {}", actionTypeStr, e.getMessage());
             return false;
         }
+    }
+
+    private boolean isWorkspaceLinkedProcess(String processName, int pid) {
+        if (!protectActiveWorkspaceProcesses) {
+            return false;
+        }
+
+        String normalizedName = normalizeProcessName(processName);
+        boolean devNameMatch = DEV_PROCESS_NAMES.contains(normalizedName);
+
+        if (pid <= 0) {
+            return devNameMatch;
+        }
+
+        try {
+            var processInfo = agentClient.getProcessInfo(pid);
+            String commandLine = String.valueOf(processInfo.getOrDefault("commandLine", "")).toLowerCase();
+            String workingDirectory = String.valueOf(processInfo.getOrDefault("workingDirectory", "")).toLowerCase();
+            String combined = commandLine + " " + workingDirectory;
+
+            if (!workspaceMarkers.isBlank()) {
+                String[] markers = workspaceMarkers.split(",");
+                for (String marker : markers) {
+                    String token = marker.trim().toLowerCase();
+                    if (!token.isEmpty() && combined.contains(token)) {
+                        return true;
+                    }
+                }
+            }
+
+            return devNameMatch;
+        } catch (Exception ex) {
+            log.debug("Could not inspect process context for PID {}. Falling back to name-based protection.", pid, ex);
+            return devNameMatch;
+        }
+    }
+
+    private String normalizeProcessName(String processName) {
+        if (processName == null) {
+            return "";
+        }
+        return processName
+                .trim()
+                .toLowerCase()
+                .replace(".exe", "");
     }
 }

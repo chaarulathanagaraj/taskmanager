@@ -42,6 +42,9 @@ class RemediationEngineTest {
     @Mock
     private BackendClient backendClient;
 
+    @Mock
+    private RemediationCooldownManager cooldownManager;
+
     private AgentConfiguration config;
     private RemediationEngine engine;
     private List<RemediationAction> remediationActions;
@@ -60,7 +63,7 @@ class RemediationEngineTest {
         remediationActions.add(createMockAction("ReducePriorityAction", SafetyLevel.LOW));
         remediationActions.add(createMockAction("TrimWorkingSetAction", SafetyLevel.MEDIUM));
 
-        engine = new RemediationEngine(remediationActions, config, backendClient);
+        engine = new RemediationEngine(remediationActions, config, backendClient, cooldownManager);
         engine.initialize();
     }
 
@@ -152,7 +155,7 @@ class RemediationEngineTest {
             DiagnosticIssue issue = createIssue(IssueType.MEMORY_LEAK, Severity.HIGH, 0.9);
 
             // When: Execute remediation with re-initialized engine
-            engine = new RemediationEngine(remediationActions, config, backendClient);
+            engine = new RemediationEngine(remediationActions, config, backendClient, cooldownManager);
             engine.initialize();
 
             ActionResult result = engine.executeRemediation(issue);
@@ -177,7 +180,7 @@ class RemediationEngineTest {
             DiagnosticIssue issue = createIssue(IssueType.MEMORY_LEAK, Severity.LOW, 0.6);
 
             // When: Execute remediation with re-initialized engine
-            engine = new RemediationEngine(remediationActions, config, backendClient);
+            engine = new RemediationEngine(remediationActions, config, backendClient, cooldownManager);
             engine.initialize();
 
             ActionResult result = engine.executeRemediation(issue);
@@ -206,7 +209,7 @@ class RemediationEngineTest {
             DiagnosticIssue issue = createIssue(IssueType.MEMORY_LEAK, Severity.HIGH, 0.9);
 
             // When: Execute remediation with re-initialized engine
-            engine = new RemediationEngine(remediationActions, config, backendClient);
+            engine = new RemediationEngine(remediationActions, config, backendClient, cooldownManager);
             engine.initialize();
 
             ActionResult result = engine.executeRemediation(issue);
@@ -227,7 +230,7 @@ class RemediationEngineTest {
             DiagnosticIssue issue = createIssue(IssueType.MEMORY_LEAK, Severity.HIGH, 0.9);
 
             // When: Execute remediation with re-initialized engine
-            engine = new RemediationEngine(remediationActions, config, backendClient);
+            engine = new RemediationEngine(remediationActions, config, backendClient, cooldownManager);
             engine.initialize();
 
             ActionResult result = engine.executeRemediation(issue);
@@ -260,7 +263,7 @@ class RemediationEngineTest {
                     .build();
 
             // When: Execute remediation with re-initialized engine
-            engine = new RemediationEngine(remediationActions, config, backendClient);
+            engine = new RemediationEngine(remediationActions, config, backendClient, cooldownManager);
             engine.initialize();
 
             ActionResult result = engine.executeRemediation(issue);
@@ -289,7 +292,7 @@ class RemediationEngineTest {
                     .build();
 
             // When: Execute remediation with re-initialized engine
-            engine = new RemediationEngine(remediationActions, config, backendClient);
+            engine = new RemediationEngine(remediationActions, config, backendClient, cooldownManager);
             engine.initialize();
 
             ActionResult result = engine.executeRemediation(issue);

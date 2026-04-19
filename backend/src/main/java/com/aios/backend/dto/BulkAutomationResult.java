@@ -21,6 +21,7 @@ public class BulkAutomationResult {
     private int automated;
     private int resolved;
     private int skippedProtected;
+    private int needsManualReview;
     private int failed;
 
     @Builder.Default

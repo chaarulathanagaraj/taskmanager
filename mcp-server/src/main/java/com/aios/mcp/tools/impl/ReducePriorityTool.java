@@ -85,8 +85,16 @@ public class ReducePriorityTool implements McpTool {
         String stdout = runPowerShell(script);
         try {
             JsonNode details = objectMapper.readTree(stdout);
+            String newPriority = details.path("newPriority").asText("");
+            if (!normalizedTarget.equalsIgnoreCase(newPriority)) {
+                throw new McpToolException(getName(),
+                        "Priority verification failed. Expected " + normalizedTarget + " but current is "
+                                + (newPriority.isBlank() ? "unknown" : newPriority),
+                        McpToolException.ERROR_OPERATION_FAILED);
+            }
+
             result.put("status", "updated");
-            result.put("message", "Priority updated successfully");
+            result.put("message", "Priority updated successfully to " + newPriority);
             result.set("details", details);
         } catch (Exception e) {
             throw new McpToolException(getName(),

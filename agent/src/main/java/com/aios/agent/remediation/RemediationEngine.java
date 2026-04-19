@@ -60,6 +60,7 @@ public class RemediationEngine {
     private final List<RemediationAction> remediationActions;
     private final AgentConfiguration config;
     private final BackendClient backendClient;
+    private final RemediationCooldownManager cooldownManager;
 
     // Action registry: map ActionType to RemediationAction implementation
     private Map<String, RemediationAction> actionRegistry;
@@ -92,7 +93,7 @@ public class RemediationEngine {
         actionRegistry = remediationActions.stream()
                 .filter(RemediationAction::isEnabled)
                 .collect(Collectors.toMap(
-                action -> normalizeActionKey(action.getName()),
+                        action -> normalizeActionKey(action.getName()),
                         Function.identity()));
 
         // Initialize semaphore for concurrent action limiting
@@ -151,15 +152,29 @@ public class RemediationEngine {
         // Check confidence threshold
         if (!config.isDryRunMode() &&
                 issue.getConfidence() < config.getAutoRemediationConfidenceThreshold()) {
-            String message = String.format(
-                    "Issue confidence %.2f%% below threshold %.2f%% - requires manual approval",
-                    issue.getConfidence() * 100,
-                    config.getAutoRemediationConfidenceThreshold() * 100);
-            log.warn(message);
-            return ActionResult.failure(message)
-                    .addDetail("confidence", issue.getConfidence())
-                    .addDetail("threshold", config.getAutoRemediationConfidenceThreshold())
-                    .addDetail("requiresApproval", true);
+            ActionResult result = ActionResult.confidenceThresholdNotMet(
+                    issue.getProcessName(),
+                    issue.getAffectedPid(),
+                    issue.getType().name(),
+                    issue.getConfidence(),
+                    config.getAutoRemediationConfidenceThreshold());
+            log.warn(result.getMessage());
+            recordExecution(action, context, result);
+            return result;
+        }
+
+        // Check cooldown to prevent rapid-fire repeated actions
+        if (!config.isDryRunMode()) {
+            ActionResult cooldownResult = cooldownManager.checkCooldown(
+                    issue.getProcessName(),
+                    issue.getAffectedPid(),
+                    actionType);
+
+            if (cooldownResult != null) {
+                log.info("Remediation blocked by cooldown: {}", cooldownResult.getMessage());
+                recordExecution(action, context, cooldownResult);
+                return cooldownResult;
+            }
         }
 
         // Check safety policy before executing action
@@ -170,7 +185,20 @@ public class RemediationEngine {
             log.warn("Policy violation for action {} on {}: {}",
                     actionType, issue.getProcessName(), policyViolation.getReason());
 
-            ActionResult blockedResult = ActionResult.policyBlocked(policyViolation);
+            ActionResult blockedResult;
+
+            // Use customized messages based on violation type
+            String reason = policyViolation.getReason().toLowerCase();
+            if (reason.contains("protected")) {
+                blockedResult = ActionResult.protectedProcessBlocked(
+                        issue.getProcessName(),
+                        issue.getAffectedPid(),
+                        actionType);
+            } else {
+                // Generic policy violation message
+                blockedResult = ActionResult.policyBlocked(policyViolation);
+            }
+
             recordExecution(action, context, blockedResult);
             return blockedResult;
         }
@@ -472,6 +500,23 @@ public class RemediationEngine {
         } else if (result.isSuccess()) {
             successfulActions.incrementAndGet();
             log.info("Remediation successful: {}", result.getMessage());
+
+            // Record in cooldown manager for future rate limiting
+            if (!result.isDryRun() && action != null) {
+                ActionType actionType = ActionType.valueOf(action.getName().toUpperCase()
+                        .replace(" ", "_")
+                        .replace("ACTION", "")
+                        .trim());
+                try {
+                    cooldownManager.recordExecution(
+                            context.getProcessName(),
+                            context.getTargetPid(),
+                            actionType,
+                            true);
+                } catch (Exception e) {
+                    log.warn("Failed to record cooldown: {}", e.getMessage());
+                }
+            }
         } else {
             failedActions.incrementAndGet();
             log.warn("Remediation failed: {}", result.getMessage());
@@ -502,7 +547,8 @@ public class RemediationEngine {
     private RemediationAction findAction(ActionType actionType) {
         String typeName = actionType.name();
 
-        // Primary match: enum name to action class-style name (e.g., KILL_PROCESS -> KillProcessAction).
+        // Primary match: enum name to action class-style name (e.g., KILL_PROCESS ->
+        // KillProcessAction).
         String classStyleName = toClassStyleActionName(typeName);
         RemediationAction action = actionRegistry.get(normalizeActionKey(classStyleName));
         if (action != null) {

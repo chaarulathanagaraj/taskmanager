@@ -52,24 +52,15 @@ public class ActionController {
         // NOTE: we pass -1 for issueId since this is manual. The executor only requires
         // PID
         try {
-            boolean globalDryRun = settingsService.getSettings() != null
-                    && settingsService.getSettings().isDryRunMode();
-            boolean autoRemediationEnabled = settingsService.getSettings() == null
-                    || settingsService.getSettings().isAutoRemediation();
-            boolean effectiveDryRun = request.isDryRun() || globalDryRun;
-
-            if (!effectiveDryRun && !autoRemediationEnabled) {
-                return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
-                        "success", false,
-                        "message", "Auto-remediation is disabled in Settings",
-                        "dryRun", false));
-            }
+            // Manual action endpoint should respect explicit operator intent.
+            boolean effectiveDryRun = request.isDryRun();
 
             Map<String, Object> result = actionExecutorService.executePID(
                     request.getActionType(),
                     request.getTargetPid(),
                     "Unknown",
-                    effectiveDryRun);
+                    effectiveDryRun,
+                    request.getTargetPriority());
             return ResponseEntity.ok(result);
         } catch (Exception e) {
             return ResponseEntity.internalServerError().body(Map.of("success", false, "error", e.getMessage()));

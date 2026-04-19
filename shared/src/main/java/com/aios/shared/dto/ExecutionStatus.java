@@ -8,6 +8,7 @@ public enum ExecutionStatus {
     APPROVED, // Approved, ready to execute
     EXECUTING, // Currently executing
     COMPLETED, // Successfully completed
+    NEEDS_ATTENTION, // Executed but resolution still needs follow-up
     FAILED, // Execution failed
     ROLLED_BACK, // Action was rolled back
     CANCELLED // Cancelled by user

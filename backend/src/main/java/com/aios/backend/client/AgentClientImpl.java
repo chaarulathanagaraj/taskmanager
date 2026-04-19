@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -58,7 +59,7 @@ public class AgentClientImpl implements AgentClient {
                                     "steps", buildExecutionSteps("kill_process", response.result)));
                 }
                 return ActionResult.failure(
-                        "MCP kill_process failed",
+                        buildMcpFailureMessage("KILL_PROCESS", parameters, response.error),
                         response.error != null ? response.error : "Unknown MCP error");
             }
 
@@ -75,7 +76,7 @@ public class AgentClientImpl implements AgentClient {
                                     "steps", buildExecutionSteps("reduce_priority", response.result)));
                 }
                 return ActionResult.failure(
-                        "MCP reduce_priority failed",
+                        buildMcpFailureMessage("REDUCE_PRIORITY", parameters, response.error),
                         response.error != null ? response.error : "Unknown MCP error");
             }
 
@@ -90,7 +91,7 @@ public class AgentClientImpl implements AgentClient {
                                     "steps", buildExecutionSteps("trim_working_set", response.result)));
                 }
                 return ActionResult.failure(
-                        "MCP trim_working_set failed",
+                        buildMcpFailureMessage("TRIM_WORKING_SET", parameters, response.error),
                         response.error != null ? response.error : "Unknown MCP error");
             }
 
@@ -105,7 +106,7 @@ public class AgentClientImpl implements AgentClient {
                                     "steps", buildExecutionSteps("restart_process", response.result)));
                 }
                 return ActionResult.failure(
-                        "MCP restart_process failed",
+                        buildMcpFailureMessage("RESTART_PROCESS", parameters, response.error),
                         response.error != null ? response.error : "Unknown MCP error");
             }
 
@@ -117,7 +118,7 @@ public class AgentClientImpl implements AgentClient {
                             Map.of("tool", "reduce_priority", "result", response.result));
                 }
                 return ActionResult.failure(
-                        "MCP reduce_priority failed for SET_PRIORITY",
+                        buildMcpFailureMessage("SET_PRIORITY", parameters, response.error),
                         response.error != null ? response.error : "Unknown MCP error");
             }
 
@@ -158,6 +159,109 @@ public class AgentClientImpl implements AgentClient {
             log.error("Failed to get process info for PID {}: {}", pid, e.getMessage(), e);
             return Map.of("error", e.getMessage());
         }
+    }
+
+    @Override
+    public Map<String, Object> diagnoseResolutionFailure(String actionType, int pid, String processName,
+            String errorMessage) {
+        Map<String, Object> diagnostics = new HashMap<>();
+        diagnostics.put("actionType", actionType);
+        diagnostics.put("pid", pid);
+        diagnostics.put("processName", processName == null ? "" : processName);
+        diagnostics.put("errorMessage", errorMessage == null ? "" : errorMessage);
+        diagnostics.put("source", "agent+mcp");
+        diagnostics.put("timestamp", java.time.Instant.now().toString());
+
+        try {
+            McpToolResponse processSnapshot = executeMcpTool("get_process_list", Map.of("pid", pid, "limit", 1));
+            diagnostics.put("processSnapshotSuccess", processSnapshot.success);
+
+            if (processSnapshot.result != null) {
+                diagnostics.put("processSnapshot", processSnapshot.result);
+            }
+
+            String rawSignal = ((errorMessage == null ? "" : errorMessage) + " "
+                    + (processSnapshot.error == null ? "" : processSnapshot.error)).toLowerCase();
+
+            String failureCategory = classifyFailureCategory(rawSignal, processSnapshot);
+            diagnostics.put("failureCategory", failureCategory);
+            diagnostics.put("retryable", isRetryable(failureCategory));
+            diagnostics.put("explanation", buildHumanExplanation(failureCategory, actionType, pid, processName));
+
+            // Pull a few recent error events for additional context; ignore failures here.
+            try {
+                McpToolResponse eventLogResponse = executeMcpTool(
+                        "read_event_log",
+                        Map.of("logName", "System", "eventType", "Error", "limit", 5));
+                if (eventLogResponse.success && eventLogResponse.result != null) {
+                    diagnostics.put("recentSystemErrors", eventLogResponse.result);
+                }
+            } catch (Exception ignored) {
+                log.debug("Unable to enrich diagnostics with event log for PID {}", pid);
+            }
+
+            return diagnostics;
+        } catch (Exception e) {
+            diagnostics.put("failureCategory", "unknown_process_state");
+            diagnostics.put("retryable", Boolean.TRUE);
+            diagnostics.put("explanation",
+                    "Resolution verification failed and diagnostics could not be collected from MCP.");
+            diagnostics.put("diagnosticError", e.getMessage());
+            return diagnostics;
+        }
+    }
+
+    private String classifyFailureCategory(String rawSignal, McpToolResponse processSnapshot) {
+        if (rawSignal.contains("permission") || rawSignal.contains("access is denied")
+                || rawSignal.contains("unauthorized")) {
+            return "insufficient_privileges";
+        }
+        if (rawSignal.contains("protected system process") || rawSignal.contains("protected")) {
+            return "permission_denied";
+        }
+        if (rawSignal.contains("in use") || rawSignal.contains("locked") || rawSignal.contains("busy")) {
+            return "process_locked_by_os";
+        }
+        if (rawSignal.contains("dependency") || rawSignal.contains("module") || rawSignal.contains("service")) {
+            return "dependency_conflict";
+        }
+        if (processSnapshot != null && processSnapshot.success && processSnapshot.result != null
+                && processSnapshot.result.has("processes") && processSnapshot.result.get("processes").isArray()) {
+            List<?> processes = objectMapper.convertValue(processSnapshot.result.get("processes"), List.class);
+            if (processes.isEmpty()) {
+                return "unknown_process_state";
+            }
+        }
+        if (rawSignal.contains("not found") || rawSignal.contains("does not exist")) {
+            return "unknown_process_state";
+        }
+        return "unknown_process_state";
+    }
+
+    private boolean isRetryable(String category) {
+        return switch (category) {
+            case "permission_denied", "insufficient_privileges", "process_locked_by_os", "dependency_conflict" -> false;
+            default -> true;
+        };
+    }
+
+    private String buildHumanExplanation(String category, String actionType, int pid, String processName) {
+        String target = (processName == null || processName.isBlank())
+                ? "PID " + pid
+                : processName + " (PID " + pid + ")";
+        return switch (category) {
+            case "permission_denied" -> "Permission denied while trying to apply " + actionType + " on " + target
+                    + ". The process appears protected by OS or policy.";
+            case "insufficient_privileges" -> "Insufficient privileges to complete " + actionType + " on " + target
+                    + ". Run agent services with elevated rights.";
+            case "process_locked_by_os" -> "The process appears locked by the OS, so " + actionType
+                    + " could not finish reliably for " + target + ".";
+            case "dependency_conflict" ->
+                "A dependency conflict prevented " + actionType + " from stabilizing " + target
+                        + ". Related services or modules may need restart order handling.";
+            default -> "The process state is unknown after " + actionType + " for " + target
+                    + ". Re-check process telemetry and retry after a short interval.";
+        };
     }
 
     private McpToolResponse executeMcpTool(String toolName, Map<String, Object> parameters) throws Exception {
@@ -220,6 +324,77 @@ public class AgentClientImpl implements AgentClient {
         }
 
         return steps;
+    }
+
+    private String buildMcpFailureMessage(String actionType, Map<String, Object> parameters, String rawError) {
+        int pid = parsePid(parameters.get("pid"));
+        String processName = extractProcessName(parameters, pid);
+        String normalizedError = rawError == null ? "UNKNOWN" : rawError.trim();
+        String upperError = normalizedError.toUpperCase();
+
+        String actionLabel = formatActionName(actionType);
+
+        if (upperError.contains("RESOURCE_NOT_FOUND")) {
+            return String.format(
+                    "%s failed for %s (PID: %d): target process was not found. It may have already exited.",
+                    actionLabel, processName, pid);
+        }
+
+        if (upperError.contains("OPERATION_FAILED")) {
+            return String.format(
+                    "%s failed for %s (PID: %d): the OS rejected or could not complete the operation. Try running agent services with elevated permissions and retry.",
+                    actionLabel, processName, pid);
+        }
+
+        if (upperError.contains("ACCESS_DENIED") || upperError.contains("PERMISSION")) {
+            return String.format(
+                    "%s failed for %s (PID: %d): access denied. Administrator privileges may be required.",
+                    actionLabel, processName, pid);
+        }
+
+        return String.format(
+                "%s failed for %s (PID: %d): %s",
+                actionLabel, processName, pid, normalizedError);
+    }
+
+    private int parsePid(Object pidValue) {
+        if (pidValue instanceof Number number) {
+            return number.intValue();
+        }
+        if (pidValue instanceof String pidText) {
+            try {
+                return Integer.parseInt(pidText);
+            } catch (NumberFormatException ignored) {
+                return -1;
+            }
+        }
+        return -1;
+    }
+
+    private String extractProcessName(Map<String, Object> parameters, int pid) {
+        Object processNameObj = parameters.get("processName");
+        if (processNameObj instanceof String processName && !processName.isBlank()) {
+            return processName;
+        }
+        return pid > 0 ? "Process" : "Unknown process";
+    }
+
+    private String formatActionName(String actionType) {
+        if (actionType == null || actionType.isBlank()) {
+            return "Action";
+        }
+
+        StringBuilder formatted = new StringBuilder();
+        for (String token : actionType.split("_")) {
+            if (token.isBlank()) {
+                continue;
+            }
+            String lower = token.toLowerCase();
+            formatted.append(Character.toUpperCase(lower.charAt(0)))
+                    .append(lower.substring(1))
+                    .append(' ');
+        }
+        return formatted.toString().trim();
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

@@ -54,9 +54,12 @@ public class RuleEngineService {
     private final IssueService issueService;
     private final WebSocketBroadcaster broadcaster;
     private final ObjectMapper objectMapper;
+    private final ProcessClassifier processClassifier;
+    private final ActionSafetyMatrix actionSafetyMatrix;
 
     /**
-     * Automate remediation for all active issues except protected processes.
+     * Automate remediation for all active issues with intelligent classification.
+     * Classifies processes and skips those that can't be safely automated.
      */
     @Transactional
     public BulkAutomationResult automateAllSafeActiveIssues() {
@@ -71,12 +74,45 @@ public class RuleEngineService {
         AtomicInteger automatedCount = new AtomicInteger(0);
         AtomicInteger resolvedCount = new AtomicInteger(0);
         AtomicInteger skippedProtectedCount = new AtomicInteger(0);
+        AtomicInteger needsManualCount = new AtomicInteger(0);
         AtomicInteger failedCount = new AtomicInteger(0);
         Queue<BulkAutomationResult.IssueAutomationOutcome> outcomes = new ConcurrentLinkedQueue<>();
         List<IssueEntity> automatableIssues = new ArrayList<>();
 
+        // Classify each issue and determine automation eligibility
         for (IssueEntity issue : activeIssues) {
-            boolean isProtected = issue.getProcessName() != null && safetyPolicy.isProtected(issue.getProcessName());
+            ProcessClassifier.ProcessClass classification = processClassifier.classify(issue);
+
+            // Skip system-critical and temp processes entirely
+            if (classification == ProcessClassifier.ProcessClass.SYSTEM_CRITICAL) {
+                skippedProtectedCount.incrementAndGet();
+                outcomes.add(BulkAutomationResult.IssueAutomationOutcome.builder()
+                        .issueId(issue.getId())
+                        .processName(issue.getProcessName())
+                        .affectedPid(issue.getAffectedPid())
+                        .issueType(issue.getType() != null ? issue.getType().name() : "UNKNOWN")
+                        .status("SKIPPED_PROTECTED")
+                        .message("System-critical process: " + processClassifier.getDescription(classification))
+                        .build());
+                continue;
+            }
+
+            if (classification == ProcessClassifier.ProcessClass.TEMP_PROCESS) {
+                skippedProtectedCount.incrementAndGet();
+                outcomes.add(BulkAutomationResult.IssueAutomationOutcome.builder()
+                        .issueId(issue.getId())
+                        .processName(issue.getProcessName())
+                        .affectedPid(issue.getAffectedPid())
+                        .issueType(issue.getType() != null ? issue.getType().name() : "UNKNOWN")
+                        .status("SKIPPED_PROTECTED")
+                        .message("Ephemeral process: likely already terminated")
+                        .build());
+                continue;
+            }
+
+            // Check user-configured protection
+            boolean isProtected = issue.getProcessName() != null
+                    && safetyPolicy.isProtected(issue.getProcessName(), issue.getAffectedPid());
             if (isProtected) {
                 skippedProtectedCount.incrementAndGet();
                 outcomes.add(BulkAutomationResult.IssueAutomationOutcome.builder()
@@ -85,7 +121,7 @@ public class RuleEngineService {
                         .affectedPid(issue.getAffectedPid())
                         .issueType(issue.getType() != null ? issue.getType().name() : "UNKNOWN")
                         .status("SKIPPED_PROTECTED")
-                        .message("Protected process; resolve manually from Issues page")
+                        .message("User-protected process; resolve manually from Issues page")
                         .build());
                 continue;
             }
@@ -109,6 +145,7 @@ public class RuleEngineService {
             result.setAutomated(automatedCount.get());
             result.setResolved(resolvedCount.get());
             result.setSkippedProtected(skippedProtectedCount.get());
+            result.setNeedsManualReview(needsManualCount.get());
             result.setFailed(failedCount.get());
             result.setOutcomes(new ArrayList<>(outcomes));
             return result;
@@ -121,12 +158,37 @@ public class RuleEngineService {
             List<CompletableFuture<Void>> futures = automatableIssues.stream()
                     .map(issue -> CompletableFuture.runAsync(() -> {
                         try {
+                            ProcessClassifier.ProcessClass classification = processClassifier.classify(issue);
                             var evaluation = ruleEvaluationService.evaluate(issue);
-                            String action = evaluation.getRecommendedAction().name();
+                            String recommendedAction = evaluation.getRecommendedAction().name();
+
+                            // Check if recommended action is safe for this process class
+                            if (!actionSafetyMatrix.isActionSafeFor(recommendedAction, classification)) {
+                                ActionSafetyMatrix.ActionRecommendation safer = actionSafetyMatrix
+                                        .getRecommendedActions(
+                                                issue.getType() != null ? issue.getType().name() : "UNKNOWN",
+                                                classification);
+
+                                if (safer.primaryAction() == null) {
+                                    needsManualCount.incrementAndGet();
+                                    outcomes.add(BulkAutomationResult.IssueAutomationOutcome.builder()
+                                            .issueId(issue.getId())
+                                            .processName(issue.getProcessName())
+                                            .affectedPid(issue.getAffectedPid())
+                                            .issueType(issue.getType() != null ? issue.getType().name() : "UNKNOWN")
+                                            .action(recommendedAction)
+                                            .status("NEEDS_MANUAL_REVIEW")
+                                            .message(safer.rationale())
+                                            .build());
+                                    return;
+                                }
+
+                                recommendedAction = safer.primaryAction();
+                            }
 
                             RuleExecutionResult execution = requestExecution(RuleExecutionRequest.builder()
                                     .issueId(issue.getId())
-                                    .actionType(action)
+                                    .actionType(recommendedAction)
                                     .dryRun(false)
                                     .approvedBy("bulk-automation")
                                     .comment("Bulk automation from Issues page")
@@ -134,15 +196,20 @@ public class RuleEngineService {
 
                             if (execution.isSuccess()) {
                                 automatedCount.incrementAndGet();
-                                String status = execution.isDryRun() ? "SIMULATED" : "RESOLVED";
+                                String status = execution.isDryRun() ? "SIMULATED" : execution.getStatus().name();
                                 String message = execution.isDryRun()
                                         ? "Dry-run enabled in Settings; remediation simulated only"
-                                        : "Automated remediation executed and issue marked resolved";
+                                        : "Automation executed.";
 
                                 if (!execution.isDryRun()) {
                                     IssueResolutionSummary summary = issueService.resolveIssue(issue.getId());
                                     if (summary != null && Boolean.TRUE.equals(summary.getResolved())) {
                                         resolvedCount.incrementAndGet();
+                                        status = "RESOLVED";
+                                        message = "Issue resolved via automated remediation";
+                                    } else if (execution.getMessage() != null && !execution.getMessage().isBlank()) {
+                                        status = "AUTOMATED";
+                                        message = execution.getMessage();
                                     }
                                 }
 
@@ -151,7 +218,7 @@ public class RuleEngineService {
                                         .processName(issue.getProcessName())
                                         .affectedPid(issue.getAffectedPid())
                                         .issueType(issue.getType() != null ? issue.getType().name() : "UNKNOWN")
-                                        .action(action)
+                                        .action(recommendedAction)
                                         .status(status)
                                         .message(message)
                                         .build());
@@ -162,7 +229,7 @@ public class RuleEngineService {
                                         .processName(issue.getProcessName())
                                         .affectedPid(issue.getAffectedPid())
                                         .issueType(issue.getType() != null ? issue.getType().name() : "UNKNOWN")
-                                        .action(action)
+                                        .action(recommendedAction)
                                         .status("FAILED")
                                         .message(execution.getMessage())
                                         .build());
@@ -174,8 +241,8 @@ public class RuleEngineService {
                                     .processName(issue.getProcessName())
                                     .affectedPid(issue.getAffectedPid())
                                     .issueType(issue.getType() != null ? issue.getType().name() : "UNKNOWN")
-                                    .status("ERROR")
-                                    .message(e.getMessage())
+                                    .status("FAILED")
+                                    .message("Automation error: " + e.getMessage())
                                     .build());
                             log.warn("Bulk automation failed for issue {}: {}", issue.getId(), e.getMessage());
                         }
@@ -190,6 +257,7 @@ public class RuleEngineService {
         result.setAutomated(automatedCount.get());
         result.setResolved(resolvedCount.get());
         result.setSkippedProtected(skippedProtectedCount.get());
+        result.setNeedsManualReview(needsManualCount.get());
         result.setFailed(failedCount.get());
         result.setOutcomes(new ArrayList<>(outcomes));
 
@@ -243,13 +311,12 @@ public class RuleEngineService {
         if (!effectiveDryRun && issue.getLastRemediationAt() != null) {
             Duration sinceRemediation = Duration.between(issue.getLastRemediationAt(), Instant.now());
             if (sinceRemediation.compareTo(AUTO_REMEDIATION_LOCK_WINDOW) < 0) {
-                long waitSeconds = AUTO_REMEDIATION_LOCK_WINDOW.minus(sinceRemediation).toSeconds();
-                return RuleExecutionResult.builder()
-                        .issueId(request.getIssueId())
-                        .status(ExecutionStatus.CANCELLED)
-                        .success(false)
-                        .message("Remediation lock active. Retry in " + waitSeconds + " seconds")
-                        .build();
+                String alternateAction = chooseAdaptiveAction(issue, request.getActionType());
+                if (alternateAction != null && !alternateAction.equals(request.getActionType())) {
+                    log.info("Recent remediation lock for {}, switching from {} to {}",
+                            issue.getProcessName(), request.getActionType(), alternateAction);
+                    request.setActionType(alternateAction);
+                }
             }
         }
 
@@ -259,12 +326,12 @@ public class RuleEngineService {
             if (latestSameAction.isPresent()) {
                 Duration sinceLastExecution = Duration.between(latestSameAction.get().getCreatedAt(), Instant.now());
                 if (sinceLastExecution.compareTo(AUTO_REMEDIATION_LOCK_WINDOW) < 0) {
-                    return RuleExecutionResult.builder()
-                            .issueId(request.getIssueId())
-                            .status(ExecutionStatus.CANCELLED)
-                            .success(false)
-                            .message("Same remediation action recently executed. Locked for 10 minutes")
-                            .build();
+                    String alternateAction = chooseAdaptiveAction(issue, request.getActionType());
+                    if (alternateAction != null && !alternateAction.equals(request.getActionType())) {
+                        log.info("Cooldown active for {}, switching remediation from {} to {}",
+                                issue.getProcessName(), request.getActionType(), alternateAction);
+                        request.setActionType(alternateAction);
+                    }
                 }
             }
         }
@@ -339,62 +406,162 @@ public class RuleEngineService {
         broadcaster.broadcastExecutionUpdate(execution.getId(), "EXECUTING", "Execution started");
 
         try {
+            IssueEntity issue = issueRepository.findById(execution.getIssueId())
+                    .orElseThrow(() -> new IllegalArgumentException("Issue not found: " + execution.getIssueId()));
+
+            List<String> actionPlan = buildAdaptiveActionPlan(issue, execution.getActionType());
+            Map<String, Object> result = new HashMap<>();
+            result.put("actionPlan", actionPlan);
+            result.put("attemptedActions", new ArrayList<String>());
+            result.put("dryRun", execution.isDryRun());
+
             broadcaster.broadcastExecutionUpdate(execution.getId(), "EXECUTING",
                     "Validating and preparing remediation",
-                    buildExecutionPlan(execution.getActionType()), 1, 4, null);
+                    buildExecutionPlan(actionPlan), 1, 4, null);
 
-            // Execute the action
-            Map<String, Object> result = actionExecutor.execute(
-                    execution.getActionType(),
-                    execution.getIssueId(),
-                    execution.isDryRun());
+            String finalAction = execution.getActionType();
+            String finalMessage = null;
+            boolean resolutionVerified = false;
 
-            broadcaster.broadcastExecutionUpdate(execution.getId(), "EXECUTING",
-                    "Agent returned a remediation result",
-                    extractAgentSteps(result), 3, 4, null);
+            for (int index = 0; index < actionPlan.size(); index++) {
+                String candidateAction = actionPlan.get(index);
+                @SuppressWarnings("unchecked")
+                List<String> attemptedActions = (List<String>) result.get("attemptedActions");
+                attemptedActions.add(candidateAction);
+
+                result.put("lastAttemptedAction", candidateAction);
+                broadcaster.broadcastExecutionUpdate(execution.getId(), "EXECUTING",
+                        "Attempting remediation action: " + candidateAction,
+                        List.of("Trying " + candidateAction + " for issue " + execution.getIssueId()),
+                        2, 4, null);
+
+                Map<String, Object> actionResult;
+                try {
+                    actionResult = actionExecutor.execute(
+                            candidateAction,
+                            execution.getIssueId(),
+                            execution.isDryRun());
+                } catch (Exception actionEx) {
+                    actionResult = new HashMap<>();
+                    actionResult.put("success", false);
+                    actionResult.put("message", actionEx.getMessage());
+                    actionResult.put("error", actionEx.getMessage());
+                }
+
+                result.put("lastActionResult", actionResult);
+
+                if (Boolean.TRUE.equals(actionResult.get("success"))) {
+                    broadcaster.broadcastExecutionUpdate(execution.getId(), "EXECUTING",
+                            "Agent returned a remediation result",
+                            extractAgentSteps(actionResult), 3, 4, null);
+
+                    if (execution.isDryRun()) {
+                        finalAction = candidateAction;
+                        finalMessage = String.valueOf(actionResult.getOrDefault("message",
+                                "Dry run completed. No system change was applied."));
+                        resolutionVerified = false;
+                        break;
+                    }
+
+                    ResolutionCheck resolutionCheck = verifyResolution(issue, candidateAction, actionResult);
+                    result.put("resolutionVerified", resolutionCheck.resolved());
+                    result.put("verificationMessage", resolutionCheck.message());
+                    finalAction = candidateAction;
+                    finalMessage = resolutionCheck.message();
+                    resolutionVerified = resolutionCheck.resolved();
+
+                    if (resolutionVerified) {
+                        issue.setRemediationTaken(true);
+                        issue.setLastRemediationAt(Instant.now());
+                        issue.markResolved();
+                        issueRepository.save(issue);
+                        break;
+                    }
+
+                    if (index < actionPlan.size() - 1) {
+                        continue;
+                    }
+                } else {
+                    finalMessage = String.valueOf(actionResult.getOrDefault("message",
+                            actionResult.getOrDefault("error", "Action did not complete successfully")));
+                    if (index < actionPlan.size() - 1) {
+                        continue;
+                    }
+                }
+            }
 
             Instant endTime = Instant.now();
             execution.setCompletedAt(endTime);
             execution.setDurationMs(endTime.toEpochMilli() - startTime.toEpochMilli());
-            execution.setStatus(ExecutionStatus.COMPLETED);
-            execution.setSuccess(true);
-            execution.setMessage("Action executed successfully");
-            execution.setExecutionDetails(objectMapper.writeValueAsString(result));
 
-            if (!execution.isDryRun()) {
-                issueRepository.findById(execution.getIssueId()).ifPresent(issue -> {
-                    issue.setRemediationTaken(true);
-                    issue.setLastRemediationAt(Instant.now());
+            if (execution.isDryRun()) {
+                execution.setStatus(ExecutionStatus.COMPLETED);
+                execution.setSuccess(true);
+                execution.setActionType(finalAction);
+                execution.setMessage(finalMessage != null
+                        ? finalMessage
+                        : "Dry run completed. No system change was applied.");
+                result.put("resolutionVerified", Boolean.FALSE);
+                result.put("verificationMessage", execution.getMessage());
+            } else if (resolutionVerified) {
+                execution.setStatus(ExecutionStatus.COMPLETED);
+                execution.setSuccess(true);
+                execution.setActionType(finalAction);
+                execution.setMessage(finalMessage);
+                broadcaster.broadcastIssueResolved(buildResolutionSummary(issue, execution, result,
+                        "AUTOMATED",
+                        finalMessage,
+                        buildExecutionSteps(execution, result, new ResolutionCheck(true, finalMessage))));
+            } else {
+                issue.setLastUpdatedAt(Instant.now());
+                issueRepository.save(issue);
 
-                    ResolutionCheck resolutionCheck = verifyResolution(issue, execution.getActionType(), result);
-                    if (resolutionCheck.resolved()) {
-                        issue.markResolved();
-                    } else {
-                        issue.setLastUpdatedAt(Instant.now());
-                    }
+                Map<String, Object> failureDiagnostics;
+                try {
+                    failureDiagnostics = agentClient.diagnoseResolutionFailure(
+                            finalAction,
+                            issue.getAffectedPid(),
+                            issue.getProcessName(),
+                            finalMessage);
+                } catch (NoSuchMethodError linkageError) {
+                    log.warn("AgentClient diagnoseResolutionFailure is unavailable at runtime. Falling back.",
+                            linkageError);
+                    failureDiagnostics = Map.of(
+                            "failureCategory", "unknown_process_state",
+                            "explanation", finalMessage,
+                            "retryable", Boolean.TRUE,
+                            "source", "fallback-runtime",
+                            "actionType", finalAction,
+                            "pid", issue.getAffectedPid(),
+                            "processName", issue.getProcessName());
+                }
+                result.put("failureDiagnostics", failureDiagnostics);
+                result.put("resolutionVerified", Boolean.FALSE);
+                result.put("verificationMessage", finalMessage);
 
-                    issueRepository.save(issue);
+                // Keep execution in a compatible terminal state while signaling
+                // follow-up via message/details.
+                execution.setStatus(ExecutionStatus.COMPLETED);
+                execution.setSuccess(true);
+                execution.setActionType(finalAction);
+                execution.setMessage(finalMessage != null
+                        ? finalMessage
+                        : "Remediation executed, but the issue still needs attention.");
 
-                    broadcaster.broadcastIssueResolved(buildResolutionSummary(issue, execution, result,
-                            "AUTOMATED",
-                            resolutionCheck.message(),
-                            buildExecutionSteps(execution, result, resolutionCheck)));
-
-                    broadcaster.broadcastExecutionUpdate(execution.getId(),
-                            resolutionCheck.resolved() ? "COMPLETED" : "VERIFICATION_REQUIRED",
-                            resolutionCheck.message(),
-                            buildExecutionSteps(execution, result, resolutionCheck),
-                            4, 4, resolutionCheck.message());
-                });
+                broadcaster.broadcastExecutionUpdate(execution.getId(), "NEEDS_ATTENTION",
+                        execution.getMessage(),
+                        buildExecutionSteps(execution, result, new ResolutionCheck(false, execution.getMessage())),
+                        4, 4, execution.getMessage());
             }
 
+            execution.setExecutionDetails(objectMapper.writeValueAsString(result));
             executionRepository.save(execution);
 
-            log.info("Execution {} completed successfully in {}ms",
-                    execution.getId(), execution.getDurationMs());
+            log.info("Execution {} completed in {}ms with status {}",
+                    execution.getId(), execution.getDurationMs(), execution.getStatus());
 
-            // Broadcast execution completed
-            broadcaster.broadcastExecutionUpdate(execution.getId(), "COMPLETED", "Execution completed successfully");
+            broadcaster.broadcastExecutionUpdate(execution.getId(), execution.getStatus().name(),
+                    execution.getMessage());
 
             return convertToResult(execution);
 
@@ -407,51 +574,160 @@ public class RuleEngineService {
             execution.setStatus(ExecutionStatus.FAILED);
             execution.setSuccess(false);
             execution.setErrorMessage(e.getMessage());
+            execution.setMessage(e.getMessage());
+
+            issueRepository.findById(execution.getIssueId()).ifPresent(issue -> {
+                Map<String, Object> failureDiagnostics;
+                try {
+                    failureDiagnostics = agentClient.diagnoseResolutionFailure(
+                            execution.getActionType(),
+                            issue.getAffectedPid(),
+                            issue.getProcessName(),
+                            e.getMessage());
+                } catch (NoSuchMethodError linkageError) {
+                    log.warn("AgentClient diagnoseResolutionFailure is unavailable at runtime. Falling back.",
+                            linkageError);
+                    failureDiagnostics = Map.of(
+                            "failureCategory", "unknown_process_state",
+                            "explanation", e.getMessage(),
+                            "retryable", Boolean.TRUE,
+                            "source", "fallback-runtime",
+                            "actionType", execution.getActionType(),
+                            "pid", issue.getAffectedPid(),
+                            "processName", issue.getProcessName());
+                }
+                Map<String, Object> details = new HashMap<>();
+                details.put("resolutionVerified", Boolean.FALSE);
+                details.put("verificationMessage", "Execution failed before verification.");
+                details.put("failureDiagnostics", failureDiagnostics);
+                try {
+                    execution.setExecutionDetails(objectMapper.writeValueAsString(details));
+                } catch (Exception jsonError) {
+                    log.warn("Failed to serialize failure diagnostics for execution {}", execution.getId(), jsonError);
+                }
+            });
 
             executionRepository.save(execution);
 
             // Broadcast execution failed
             broadcaster.broadcastExecutionUpdate(execution.getId(), "FAILED", "Execution failed: " + e.getMessage());
 
-            // --- FALLBACK MECHANISM ---
-            String fallbackAction = determineFallbackAction(execution.getActionType());
-            if (fallbackAction != null) {
-                log.info("Initiating fallback action {} for failed execution {}", fallbackAction, execution.getId());
-                broadcaster.broadcastExecutionUpdate(execution.getId(), "FALLBACK",
-                        "Initiating fallback: " + fallbackAction);
+            // --- INTELLIGENT FALLBACK MECHANISM ---
+            // Try fallback actions based on process classification
+            issueRepository.findById(execution.getIssueId()).ifPresent(issue -> {
+                ProcessClassifier.ProcessClass classification = processClassifier.classify(issue);
+                List<String> actionPlan = buildAdaptiveActionPlan(issue, execution.getActionType());
 
-                try {
-                    Map<String, Object> fallbackResult = actionExecutor.execute(
-                            fallbackAction,
-                            execution.getIssueId(),
-                            execution.isDryRun());
-
-                    log.info("Fallback action {} successful.", fallbackAction);
-                    execution.setErrorMessage(
-                            execution.getErrorMessage() + " | Fallback (" + fallbackAction + ") succeeded.");
-                    executionRepository.save(execution);
-                } catch (Exception fallbackEx) {
-                    log.error("Fallback action {} also failed: {}", fallbackAction, fallbackEx.getMessage());
-                    execution.setErrorMessage(execution.getErrorMessage() + " | Fallback (" + fallbackAction
-                            + ") failed: " + fallbackEx.getMessage());
-                    executionRepository.save(execution);
+                String fallbackAction = null;
+                for (String candidateAction : actionPlan) {
+                    if (candidateAction != null
+                            && !candidateAction.equals(execution.getActionType())
+                            && actionSafetyMatrix.isActionSafeFor(candidateAction, classification)) {
+                        fallbackAction = candidateAction;
+                        break;
+                    }
                 }
-            }
-            // --------------------------
+
+                if (fallbackAction != null) {
+                    log.info("Initiating fallback action {} for failed execution {}", fallbackAction,
+                            execution.getId());
+                    broadcaster.broadcastExecutionUpdate(execution.getId(), "FALLBACK",
+                            "Attempting fallback: " + fallbackAction);
+
+                    try {
+                        Map<String, Object> fallbackResult = actionExecutor.execute(
+                                fallbackAction,
+                                execution.getIssueId(),
+                                execution.isDryRun());
+
+                        log.info("Fallback action {} successful.", fallbackAction);
+                        execution.setErrorMessage(
+                                execution.getErrorMessage() + " | Fallback (" + fallbackAction + ") succeeded.");
+                        executionRepository.save(execution);
+                    } catch (Exception fallbackEx) {
+                        log.error("Fallback action {} also failed: {}", fallbackAction, fallbackEx.getMessage());
+                        execution.setErrorMessage(execution.getErrorMessage() + " | Fallback (" + fallbackAction
+                                + ") failed: " + fallbackEx.getMessage());
+                        executionRepository.save(execution);
+                    }
+                }
+            });
+            // -----------------------
 
             return convertToResult(execution);
         }
     }
 
-    private String determineFallbackAction(String primaryAction) {
-        if (primaryAction == null)
-            return null;
-        return switch (primaryAction) {
-            case "RESTART_PROCESS" -> "REDUCE_PRIORITY";
-            case "KILL_PROCESS" -> "REDUCE_PRIORITY";
-            case "TRIM_WORKING_SET" -> "KILL_PROCESS";
-            default -> null;
-        };
+    /**
+     * Build an adaptive action plan based on issue type and process classification.
+     * Uses ActionSafetyMatrix to filter safe actions for the process type.
+     */
+    private List<String> buildAdaptiveActionPlan(IssueEntity issue, String primaryAction) {
+        List<String> plan = new ArrayList<>();
+
+        if (issue == null) {
+            addUnique(plan, primaryAction);
+            return plan;
+        }
+
+        ProcessClassifier.ProcessClass classification = processClassifier.classify(issue);
+
+        // Get action recommendation from safety matrix based on process class and issue
+        // type
+        String issueTypeStr = issue.getType() != null ? issue.getType().name() : "UNKNOWN";
+        ActionSafetyMatrix.ActionRecommendation recommendation = actionSafetyMatrix.getRecommendedActions(issueTypeStr,
+                classification);
+
+        // Add the primary action if it's the one recommended
+        if (recommendation.primaryAction() != null && recommendation.primaryAction().equals(primaryAction)) {
+            addUnique(plan, primaryAction);
+        }
+
+        // Add all fallback actions that are safe for this process class
+        if (recommendation.fallbackChain() != null) {
+            for (String action : recommendation.fallbackChain()) {
+                if (actionSafetyMatrix.isActionSafeFor(action, classification)) {
+                    addUnique(plan, action);
+                }
+            }
+        }
+
+        // If plan is empty, use the recommended action from the matrix
+        if (plan.isEmpty() && recommendation.primaryAction() != null) {
+            addUnique(plan, recommendation.primaryAction());
+        }
+
+        // Final fallback: generic strategy
+        if (plan.isEmpty()) {
+            if (actionSafetyMatrix.isActionSafeFor("TRIM_WORKING_SET", classification)) {
+                addUnique(plan, "TRIM_WORKING_SET");
+            }
+            if (actionSafetyMatrix.isActionSafeFor("REDUCE_PRIORITY", classification)) {
+                addUnique(plan, "REDUCE_PRIORITY");
+            }
+        }
+
+        return plan;
+    }
+
+    /**
+     * Choose an adaptive action different from the requested one.
+     * Respects process classification safety constraints.
+     */
+    private String chooseAdaptiveAction(IssueEntity issue, String requestedAction) {
+        List<String> plan = buildAdaptiveActionPlan(issue, requestedAction);
+        for (String action : plan) {
+            if (action != null && !action.equals(requestedAction)) {
+                return action;
+            }
+        }
+        return null;
+    }
+
+    private void addUnique(List<String> plan, String action) {
+        if (action != null && !plan.contains(action)) {
+            plan.add(action);
+        }
     }
 
     /**
@@ -483,7 +759,7 @@ public class RuleEngineService {
 
         // KILL_PROCESS requires approval for protected processes
         if ("KILL_PROCESS".equals(actionType)) {
-            return safetyPolicy.isProtected(issue.getProcessName());
+            return safetyPolicy.isProtected(issue.getProcessName(), issue.getAffectedPid());
         }
 
         return false;
@@ -550,6 +826,12 @@ public class RuleEngineService {
         steps.add("Created execution record #" + execution.getId());
         steps.add("Executed action " + execution.getActionType());
 
+        Object attemptedActions = actionResult != null ? actionResult.get("attemptedActions") : null;
+        if (attemptedActions instanceof List<?> attemptedList && !attemptedList.isEmpty()) {
+            steps.add("Attempted actions: "
+                    + attemptedList.stream().map(String::valueOf).collect(Collectors.joining(" -> ")));
+        }
+
         List<String> agentSteps = extractAgentSteps(actionResult);
         if (!agentSteps.isEmpty()) {
             steps.addAll(agentSteps);
@@ -561,11 +843,11 @@ public class RuleEngineService {
         return steps;
     }
 
-    private List<String> buildExecutionPlan(String actionType) {
+    private List<String> buildExecutionPlan(List<String> actionPlan) {
         List<String> steps = new java.util.ArrayList<>();
         steps.add("Validate safety policy and execution lock");
         steps.add("Capture current process snapshot");
-        steps.add("Send remediation request to the agent");
+        steps.add("Send remediation request(s) to the agent: " + String.join(" -> ", actionPlan));
         steps.add("Verify the post-action process state");
         return steps;
     }
@@ -623,8 +905,17 @@ public class RuleEngineService {
                         : new ResolutionCheck(false,
                                 "Process termination executed, but the process is still present. Manual verification is required.");
             }
-            case "RESTART_PROCESS" -> new ResolutionCheck(false,
-                    "Process restart completed. Confirm the new process is healthy and the memory leak no longer reproduces.");
+            case "RESTART_PROCESS" -> {
+                Map<String, Object> processInfo = agentClient.getProcessInfo(issue.getAffectedPid());
+                boolean processPresent = processInfo != null
+                        && !processInfo.containsKey("error")
+                        && !"unknown".equalsIgnoreCase(String.valueOf(processInfo.getOrDefault("name", "unknown")));
+                yield processPresent
+                        ? new ResolutionCheck(true,
+                                "Process restart verified. A healthy process instance is running and the issue is marked resolved.")
+                        : new ResolutionCheck(false,
+                                "Restart was attempted, but no healthy process instance was verified. Manual follow-up is required.");
+            }
             case "TRIM_WORKING_SET" -> new ResolutionCheck(false,
                     "Working set trim completed. Recheck the dashboard to confirm the memory leak trend is reduced or gone.");
             case "REDUCE_PRIORITY" -> new ResolutionCheck(false,
@@ -635,5 +926,28 @@ public class RuleEngineService {
     }
 
     private record ResolutionCheck(boolean resolved, String message) {
+    }
+
+    /**
+     * Format an action type name for display in messages.
+     * Converts enum names to readable format (e.g., KILL_PROCESS -> Kill Process).
+     * 
+     * @param actionType The action type string
+     * @return Formatted action name
+     */
+    private String formatActionName(String actionType) {
+        if (actionType == null) {
+            return "Unknown";
+        }
+
+        StringBuilder result = new StringBuilder();
+        for (String word : actionType.split("_")) {
+            if (!word.isEmpty()) {
+                result.append(word.charAt(0))
+                        .append(word.substring(1).toLowerCase())
+                        .append(" ");
+            }
+        }
+        return result.toString().trim();
     }
 }

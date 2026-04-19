@@ -48,7 +48,7 @@ public class RuleEvaluationService {
         ActionType recommendedAction = recommendAction(issue, details, age, matches);
 
         boolean isProtected = issue.getProcessName() != null
-                && safetyPolicyService.isProtected(issue.getProcessName());
+                && safetyPolicyService.isProtected(issue.getProcessName(), issue.getAffectedPid());
 
         PolicyViolation policy = safetyPolicyService.checkPolicy(
                 recommendedAction,
@@ -105,6 +105,12 @@ public class RuleEvaluationService {
         switch (issue.getType()) {
             case MEMORY_LEAK:
                 matches.add(match("MEM_LEAK_BASE", "Memory Leak Signature", "Memory leak pattern detected", 0.72));
+                if (isNonRestartFriendlyProcess(issue)) {
+                    matches.add(match("MEM_LEAK_SAFER", "Safe Memory Leak Remediation",
+                            "Process looks service/system-like, so restart is deferred in favor of a safer action",
+                            0.87));
+                    return ActionType.TRIM_WORKING_SET;
+                }
                 if (age.compareTo(PERSISTENCE_SIGNAL) >= 0) {
                     matches.add(match("MEM_LEAK_PERSIST", "Leak Persistence", "Leak persisted over 10 minutes", 0.88));
                 }
@@ -154,6 +160,42 @@ public class RuleEvaluationService {
                 matches.add(match("UNKNOWN_BASE", "Unknown Issue Type", "Fallback to safe recommendation", 0.4));
                 return ActionType.NOTIFY_USER;
         }
+    }
+
+    private boolean isNonRestartFriendlyProcess(IssueEntity issue) {
+        if (issue == null || issue.getProcessName() == null) {
+            return false;
+        }
+
+        String normalizedName = issue.getProcessName().trim().toLowerCase(Locale.ROOT).replace(".exe", "");
+
+        if (safetyPolicyService.isProtected(issue.getProcessName(), issue.getAffectedPid())) {
+            return true;
+        }
+
+        List<String> restartAvoidPatterns = List.of(
+                "wmi",
+                "msmpeng",
+                "searchindexer",
+                "mscorsvw",
+                "svchost",
+                "pcconnectionservice",
+                "instanttransfer",
+                "onedrive",
+                "wmiapsrv");
+
+        for (String pattern : restartAvoidPatterns) {
+            if (normalizedName.contains(pattern)) {
+                return true;
+            }
+        }
+
+        return normalizedName.startsWith("system")
+                || normalizedName.equals("explorer")
+                || normalizedName.equals("services")
+                || normalizedName.equals("lsass")
+                || normalizedName.equals("winlogon")
+                || normalizedName.equals("wininit");
     }
 
     private RuleMatchDto match(String id, String name, String rationale, double score) {

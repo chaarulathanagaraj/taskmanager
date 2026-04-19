@@ -12,6 +12,7 @@ interface ExecuteActionRequest {
   actionType: ActionType;
   targetPid: number;
   dryRun: boolean;
+  targetPriority?: 'BELOW_NORMAL' | 'IDLE';
 }
 
 interface RemediationControlsProps {
@@ -172,7 +173,8 @@ export const RemediationControls: React.FC<RemediationControlsProps> = ({
           initialValues={{
             actionType: 'REDUCE_PRIORITY',
             targetPid: defaultPid,
-            dryRun: true,
+            dryRun: false,
+            targetPriority: 'BELOW_NORMAL',
           }}
         >
           <Form.Item
@@ -218,6 +220,19 @@ export const RemediationControls: React.FC<RemediationControlsProps> = ({
               min={1}
             />
           </Form.Item>
+
+          {selectedAction === 'REDUCE_PRIORITY' && (
+            <Form.Item
+              name="targetPriority"
+              label="Target Priority"
+              extra="Task Manager should show this priority after successful execution"
+            >
+              <Select>
+                <Select.Option value="BELOW_NORMAL">Below Normal</Select.Option>
+                <Select.Option value="IDLE">Low (Idle)</Select.Option>
+              </Select>
+            </Form.Item>
+          )}
 
           <Divider />
 

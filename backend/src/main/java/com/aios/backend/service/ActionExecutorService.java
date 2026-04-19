@@ -47,7 +47,7 @@ public class ActionExecutorService {
                     actionResult = executeKillProcess(issue.getAffectedPid(), dryRun);
 
                 case "REDUCE_PRIORITY" ->
-                    actionResult = executeReducePriority(issue.getAffectedPid(), dryRun);
+                    actionResult = executeReducePriority(issue.getAffectedPid(), dryRun, null);
 
                 case "TRIM_WORKING_SET" ->
                     actionResult = executeTrimWorkingSet(issue.getAffectedPid(), dryRun);
@@ -63,7 +63,10 @@ public class ActionExecutorService {
             result.put("details", actionResult.getDetails());
 
             if (!actionResult.isSuccess()) {
-                throw new RuntimeException("Action execution failed: " + actionResult.getMessage());
+                String message = actionResult.getMessage() != null && !actionResult.getMessage().isBlank()
+                        ? actionResult.getMessage()
+                        : (actionResult.getError() != null ? actionResult.getError() : "Unknown action failure");
+                throw new RuntimeException(message);
             }
 
             return result;
@@ -72,7 +75,7 @@ public class ActionExecutorService {
             log.error("Failed to execute action {}: {}", actionType, e.getMessage(), e);
             result.put("success", false);
             result.put("error", e.getMessage());
-            throw new RuntimeException("Action execution failed", e);
+            throw new RuntimeException(e.getMessage(), e);
         }
     }
 
@@ -123,7 +126,8 @@ public class ActionExecutorService {
         }
     }
 
-    public Map<String, Object> executePID(String actionType, int pid, String processName, boolean dryRun) {
+    public Map<String, Object> executePID(String actionType, int pid, String processName, boolean dryRun,
+            String targetPriority) {
         Map<String, Object> result = new java.util.HashMap<>();
         result.put("actionType", actionType);
         result.put("targetPid", pid);
@@ -134,7 +138,7 @@ public class ActionExecutorService {
             com.aios.shared.dto.ActionResult actionResult;
             switch (actionType) {
                 case "KILL_PROCESS" -> actionResult = executeKillProcess(pid, dryRun);
-                case "REDUCE_PRIORITY" -> actionResult = executeReducePriority(pid, dryRun);
+                case "REDUCE_PRIORITY" -> actionResult = executeReducePriority(pid, dryRun, targetPriority);
                 case "TRIM_WORKING_SET" -> actionResult = executeTrimWorkingSet(pid, dryRun);
                 case "RESTART_PROCESS" -> actionResult = executeRestartProcess(pid, processName, dryRun);
                 default -> throw new IllegalArgumentException("Unsupported action type: " + actionType);
@@ -224,14 +228,21 @@ public class ActionExecutorService {
         return agentClient.executeAction(ActionType.KILL_PROCESS.name(), Map.of("pid", pid));
     }
 
-    private ActionResult executeReducePriority(int pid, boolean dryRun) {
-        log.info("Executing REDUCE_PRIORITY for PID {} (dryRun={})", pid, dryRun);
+    private ActionResult executeReducePriority(int pid, boolean dryRun, String targetPriority) {
+        log.info("Executing REDUCE_PRIORITY for PID {} (dryRun={}, targetPriority={})",
+                pid, dryRun, targetPriority);
 
         if (dryRun) {
             return ActionResult.success("Dry run: Would reduce priority of process " + pid);
         }
 
-        return agentClient.executeAction(ActionType.REDUCE_PRIORITY.name(), Map.of("pid", pid));
+        Map<String, Object> parameters = new HashMap<>();
+        parameters.put("pid", pid);
+        if (targetPriority != null && !targetPriority.isBlank()) {
+            parameters.put("targetPriority", targetPriority);
+        }
+
+        return agentClient.executeAction(ActionType.REDUCE_PRIORITY.name(), parameters);
     }
 
     private ActionResult executeTrimWorkingSet(int pid, boolean dryRun) {

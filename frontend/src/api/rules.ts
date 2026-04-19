@@ -64,7 +64,7 @@ export interface BulkAutomationOutcome {
   affectedPid: number;
   issueType: string;
   action?: string;
-  status: 'RESOLVED' | 'SIMULATED' | 'FAILED' | 'ERROR' | 'SKIPPED_PROTECTED';
+  status: 'RESOLVED' | 'AUTOMATED' | 'SIMULATED' | 'FAILED' | 'ERROR' | 'SKIPPED_PROTECTED' | 'NEEDS_ATTENTION' | 'NEEDS_MANUAL_REVIEW';
   message: string;
 }
 
@@ -73,6 +73,7 @@ export interface BulkAutomationResult {
   automated: number;
   resolved: number;
   skippedProtected: number;
+  needsManualReview: number;
   failed: number;
   outcomes: BulkAutomationOutcome[];
 }

@@ -27,4 +27,28 @@ public interface AgentClient {
      * @return process information
      */
     Map<String, Object> getProcessInfo(int pid);
+
+    /**
+     * Diagnose why a remediation did not resolve an issue using Agent + MCP
+     * context.
+     *
+     * @param actionType   action that was attempted
+     * @param pid          affected process id
+     * @param processName  affected process name
+     * @param errorMessage latest execution or verification error message
+     * @return structured diagnostics with category, explanation, and retry hints
+     */
+    default Map<String, Object> diagnoseResolutionFailure(String actionType, int pid, String processName,
+            String errorMessage) {
+        return Map.of(
+                "failureCategory", "unknown_process_state",
+                "explanation", "Resolution verification failed and no agent diagnostics were available.",
+                "retryable", Boolean.TRUE,
+                "actionType", actionType,
+                "pid", pid,
+                "processName", processName,
+                "errorMessage", errorMessage == null ? "" : errorMessage,
+                "source", "agent+mcp",
+                "timestamp", java.time.Instant.now().toString());
+    }
 }

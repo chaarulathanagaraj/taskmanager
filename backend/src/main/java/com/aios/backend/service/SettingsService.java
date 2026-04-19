@@ -45,7 +45,14 @@ public class SettingsService {
             "code.exe",
             "Code.exe",
             "Code - Insiders.exe",
-            "devenv.exe");
+            "devenv.exe",
+            "java.exe",
+            "javaw.exe",
+            "node.exe",
+            "powershell.exe",
+            "pwsh.exe",
+            "cmd.exe",
+            "conhost.exe");
 
     private static final String SETTINGS_FILE = "aios-settings.json";
     private static final Path SETTINGS_PATH = Paths.get(System.getProperty("user.home"), ".aios", SETTINGS_FILE);
@@ -167,7 +174,8 @@ public class SettingsService {
         List<String> criticalProcesses = List.of(
                 "System", "csrss.exe", "lsass.exe", "winlogon.exe",
                 "services.exe", "smss.exe", "wininit.exe",
-                "code.exe", "Code.exe", "Code - Insiders.exe", "devenv.exe");
+            "code.exe", "Code.exe", "Code - Insiders.exe", "devenv.exe",
+            "java.exe", "javaw.exe", "node.exe", "powershell.exe", "pwsh.exe", "cmd.exe", "conhost.exe");
         return criticalProcesses.stream()
                 .anyMatch(p -> p.equalsIgnoreCase(processPattern));
     }
