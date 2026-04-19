@@ -79,15 +79,18 @@ public class SuspendProcessTool implements McpTool {
             return result;
         }
 
-        String script = "$ErrorActionPreference='Stop';"
-                + "$targetPid=" + pid + ";"
-                + "$p=Get-Process -Id $targetPid -ErrorAction Stop;"
-                + "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;"
+        String csharpCode = "using System;using System.Runtime.InteropServices;"
                 + "public static class NativeMethods {"
                 + "[DllImport(\"kernel32.dll\", SetLastError=true)] public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);"
                 + "[DllImport(\"ntdll.dll\")] public static extern int NtSuspendProcess(IntPtr processHandle);"
                 + "[DllImport(\"kernel32.dll\", SetLastError=true)] public static extern bool CloseHandle(IntPtr hObject);"
-                + "}';"
+                + "}";
+
+        String script = "$ErrorActionPreference='Stop';"
+                + "$targetPid=" + pid + ";"
+                + "$p=Get-Process -Id $targetPid -ErrorAction Stop;"
+                + "$csharpCode=@\"\n" + csharpCode + "\n\"@;"
+                + "Add-Type -TypeDefinition $csharpCode;"
                 + "$PROCESS_SUSPEND_RESUME=0x0800;"
                 + "$PROCESS_QUERY_LIMITED_INFORMATION=0x1000;"
                 + "$access = $PROCESS_SUSPEND_RESUME -bor $PROCESS_QUERY_LIMITED_INFORMATION;"
