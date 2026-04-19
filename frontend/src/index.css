@@ -37,7 +37,9 @@
 }
 
 /* Base styles */
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
@@ -108,19 +110,19 @@ a:hover {
   .hide-xs {
     display: none !important;
   }
-  
+
   .ant-card {
     margin-bottom: 12px;
   }
-  
+
   .ant-table-wrapper {
     overflow-x: auto;
   }
-  
+
   .ant-statistic-title {
     font-size: 12px;
   }
-  
+
   .ant-statistic-content-value {
     font-size: 20px;
   }
@@ -152,7 +154,7 @@ a:hover {
   .no-print {
     display: none !important;
   }
-  
+
   .ant-layout-sider,
   .ant-layout-header {
     display: none !important;
@@ -187,9 +189,12 @@ a:hover {
 
 /* Loading animation */
 @keyframes pulse {
-  0%, 100% {
+
+  0%,
+  100% {
     opacity: 1;
   }
+
   50% {
     opacity: 0.5;
   }
@@ -200,56 +205,162 @@ a:hover {
 }
 
 /* Status indicator colors */
-.status-excellent { color: #52c41a; }
-.status-good { color: #73d13d; }
-.status-fair { color: #faad14; }
-.status-poor { color: #ff7a45; }
-.status-critical { color: #ff4d4f; }
+.status-excellent {
+  color: #52c41a;
+}
+
+.status-good {
+  color: #73d13d;
+}
+
+.status-fair {
+  color: #faad14;
+}
+
+.status-poor {
+  color: #ff7a45;
+}
+
+.status-critical {
+  color: #ff4d4f;
+}
 
 /* Severity badges */
-.severity-low { background: #e6f7ff; color: #1890ff; border-color: #91d5ff; }
-.severity-medium { background: #fffbe6; color: #faad14; border-color: #ffe58f; }
-.severity-high { background: #fff2e8; color: #ff7a45; border-color: #ffbb96; }
-.severity-critical { background: #fff1f0; color: #ff4d4f; border-color: #ffa39e; }
+.severity-low {
+  background: #e6f7ff;
+  color: #1890ff;
+  border-color: #91d5ff;
+}
+
+.severity-medium {
+  background: #fffbe6;
+  color: #faad14;
+  border-color: #ffe58f;
+}
+
+.severity-high {
+  background: #fff2e8;
+  color: #ff7a45;
+  border-color: #ffbb96;
+}
+
+.severity-critical {
+  background: #fff1f0;
+  color: #ff4d4f;
+  border-color: #ffa39e;
+}
 
 /* ============================================
    Utility Classes
    ============================================ */
 
-.text-center { text-align: center; }
-.text-left { text-align: left; }
-.text-right { text-align: right; }
+.text-center {
+  text-align: center;
+}
 
-.mt-0 { margin-top: 0; }
-.mt-1 { margin-top: 8px; }
-.mt-2 { margin-top: 16px; }
-.mt-3 { margin-top: 24px; }
+.text-left {
+  text-align: left;
+}
 
-.mb-0 { margin-bottom: 0; }
-.mb-1 { margin-bottom: 8px; }
-.mb-2 { margin-bottom: 16px; }
-.mb-3 { margin-bottom: 24px; }
+.text-right {
+  text-align: right;
+}
 
-.p-0 { padding: 0; }
-.p-1 { padding: 8px; }
-.p-2 { padding: 16px; }
-.p-3 { padding: 24px; }
+.mt-0 {
+  margin-top: 0;
+}
 
-.w-100 { width: 100%; }
-.h-100 { height: 100%; }
+.mt-1 {
+  margin-top: 8px;
+}
 
-.d-flex { display: flex; }
-.flex-column { flex-direction: column; }
-.align-center { align-items: center; }
-.justify-center { justify-content: center; }
-.justify-between { justify-content: space-between; }
-.gap-1 { gap: 8px; }
-.gap-2 { gap: 16px; }
+.mt-2 {
+  margin-top: 16px;
+}
+
+.mt-3 {
+  margin-top: 24px;
+}
+
+.mb-0 {
+  margin-bottom: 0;
+}
+
+.mb-1 {
+  margin-bottom: 8px;
+}
+
+.mb-2 {
+  margin-bottom: 16px;
+}
+
+.mb-3 {
+  margin-bottom: 24px;
+}
+
+.p-0 {
+  padding: 0;
+}
+
+.p-1 {
+  padding: 8px;
+}
+
+.p-2 {
+  padding: 16px;
+}
+
+.p-3 {
+  padding: 24px;
+}
+
+.w-100 {
+  width: 100%;
+}
+
+.h-100 {
+  height: 100%;
+}
+
+.d-flex {
+  display: flex;
+}
+
+.flex-column {
+  flex-direction: column;
+}
+
+.align-center {
+  align-items: center;
+}
+
+.justify-center {
+  justify-content: center;
+}
+
+.justify-between {
+  justify-content: space-between;
+}
+
+.gap-1 {
+  gap: 8px;
+}
+
+.gap-2 {
+  gap: 16px;
+}
 
 /* Fade in animation */
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .fade-in {
@@ -266,9 +377,11 @@ button:focus-visible {
     color: #213547;
     background-color: #ffffff;
   }
+
   a:hover {
     color: #747bff;
   }
+
   button {
     background-color: #f9f9f9;
   }

@@ -1,12 +1,11 @@
-import { Space, Badge, Avatar, Dropdown, Typography } from 'antd';
+import { Space, Avatar, Typography, Badge, Dropdown } from 'antd';
+import { useNavigate } from 'react-router-dom';
 import {
-  BellOutlined,
   UserOutlined,
-  SettingOutlined,
-  LogoutOutlined,
+  BellOutlined,
+  WarningOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
-  WarningOutlined,
 } from '@ant-design/icons';
 import { useSystemHealth, useIssues } from '../../hooks/useMetrics';
 import type { MenuProps } from 'antd';
@@ -18,50 +17,77 @@ const { Text } = Typography;
  * Application header with status indicators and user menu
  */
 export const AppHeader: React.FC = () => {
+  const navigate = useNavigate();
   const { data: health } = useSystemHealth();
   const { data: issues = [] } = useIssues();
 
-  // Filter critical issues for notifications
-  const criticalIssues = issues.filter((issue: DiagnosticIssue) => issue.severity === 'CRITICAL');
+  const PRIMARY_NOTIFICATION_TYPES = ['MEMORY_LEAK', 'RESOURCE_HOG'];
+  const formatIssueType = (type: string) => type.replace(/_/g, ' ');
 
-  const notificationItems: MenuProps['items'] = criticalIssues.length > 0
-    ? criticalIssues.map((issue: DiagnosticIssue) => ({
-        key: `issue-${issue.id}`,
-        icon: <WarningOutlined style={{ color: '#ff4d4f' }} />,
+  // Keep one notification entry per issue type for primary types,
+  // and merge all other issue types into a single "Other Issues" notification.
+  const primaryIssuesByType = issues
+    .filter((issue) => PRIMARY_NOTIFICATION_TYPES.includes(issue.type || 'UNKNOWN'))
+    .reduce<Record<string, DiagnosticIssue[]>>((acc, issue) => {
+      const key = issue.type || 'UNKNOWN';
+      if (!acc[key]) {
+        acc[key] = [];
+      }
+      acc[key].push(issue);
+      return acc;
+    }, {});
+
+  const otherIssues = issues.filter((issue) => !PRIMARY_NOTIFICATION_TYPES.includes(issue.type || 'UNKNOWN'));
+  const otherHasHighPriority = otherIssues.some((issue) => issue.severity === 'CRITICAL');
+
+  const typeKeys = Object.keys(primaryIssuesByType);
+
+  const primaryNotificationItems: NonNullable<MenuProps['items']> = typeKeys.map((typeKey) => {
+    const grouped = primaryIssuesByType[typeKey];
+    return {
+      key: `type-${typeKey}`,
+      icon: <WarningOutlined style={{ color: '#faad14' }} />,
+      label: (
+        <div style={{ maxWidth: 340, whiteSpace: 'normal' }}>
+          <Text strong>{formatIssueType(typeKey)}</Text>
+          <br />
+          <Text type="secondary" style={{ fontSize: '12px' }}>
+            Active: {grouped.length} issue(s)
+          </Text>
+        </div>
+      ),
+    };
+  });
+
+  const otherNotificationItems: NonNullable<MenuProps['items']> = otherIssues.length > 0
+    ? [
+      {
+        key: 'type-OTHER',
+        icon: <WarningOutlined style={{ color: '#faad14' }} />,
         label: (
-          <div style={{ maxWidth: 300, whiteSpace: 'normal' }}>
-            <Text strong>{issue.type}</Text>
+          <div style={{ maxWidth: 340, whiteSpace: 'normal' }}>
+            <Text strong>Other Issues</Text>
             <br />
             <Text type="secondary" style={{ fontSize: '12px' }}>
-              {issue.details}
+              Active: {otherIssues.length} issue(s){otherHasHighPriority ? ', includes high-priority items' : ''}
             </Text>
           </div>
         ),
-      }))
-    : [
-        {
-          key: 'no-notifications',
-          label: <Text type="secondary">No critical issues</Text>,
-          disabled: true,
-        },
-      ];
+      },
+    ]
+    : [];
 
-  const userMenuItems: MenuProps['items'] = [
-    {
-      key: 'settings',
-      icon: <SettingOutlined />,
-      label: 'Settings',
-    },
-    {
-      type: 'divider',
-    },
-    {
-      key: 'logout',
-      icon: <LogoutOutlined />,
-      label: 'Logout',
-      danger: true,
-    },
-  ];
+  const activeNotificationCount = primaryNotificationItems.length + otherNotificationItems.length;
+
+  const notificationItems: MenuProps['items'] = activeNotificationCount > 0
+    ? [...primaryNotificationItems, ...otherNotificationItems]
+    : [
+      {
+        key: 'no-active-notifications',
+        label: <Text type="secondary">No active issue notifications</Text>,
+        disabled: true,
+      },
+    ];
 
   const isHealthy = health === 'HEALTHY' || health === 'UP';
 
@@ -84,20 +110,15 @@ export const AppHeader: React.FC = () => {
           </Text>
         </Space>
 
-        {/* Notifications */}
         <Dropdown menu={{ items: notificationItems }} placement="bottomRight" trigger={['click']}>
-          <Badge count={criticalIssues.length} offset={[-5, 5]} color="#ff4d4f">
+          <Badge count={activeNotificationCount} offset={[-5, 5]} color="#faad14">
             <BellOutlined style={{ fontSize: 20, cursor: 'pointer' }} />
           </Badge>
         </Dropdown>
 
-        {/* User Menu */}
-        <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
-          <Space style={{ cursor: 'pointer' }}>
-            <Avatar icon={<UserOutlined />} />
-            <Text>Admin</Text>
-          </Space>
-        </Dropdown>
+        <Space style={{ cursor: 'pointer' }} onClick={() => navigate('/settings')}>
+          <Avatar icon={<UserOutlined />} />
+        </Space>
       </Space>
     </div>
   );

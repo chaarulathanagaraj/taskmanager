@@ -2,6 +2,7 @@ package com.aios.backend.service;
 
 import com.aios.backend.model.SafetyPolicyEntity;
 import com.aios.backend.repository.SafetyPolicyRepository;
+import com.aios.shared.client.AgentClient;
 import com.aios.shared.dto.PolicyViolation;
 import com.aios.shared.enums.ActionType;
 import com.aios.shared.enums.SafetyLevel;
@@ -43,11 +44,14 @@ class SafetyPolicyServiceTest {
     @Mock
     private SettingsService settingsService;
 
+    @Mock
+    private AgentClient agentClient;
+
     private SafetyPolicyService service;
 
     @BeforeEach
     void setUp() {
-        service = new SafetyPolicyService(policyRepository, settingsService);
+        service = new SafetyPolicyService(policyRepository, settingsService, agentClient);
         // Set default values via reflection
         ReflectionTestUtils.setField(service, "defaultProtectedProcesses",
                 "csrss.exe,winlogon.exe,services.exe,lsass.exe,System,smss.exe,svchost.exe");

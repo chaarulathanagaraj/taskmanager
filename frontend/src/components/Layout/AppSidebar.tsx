@@ -3,11 +3,8 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import {
   DashboardOutlined,
   WarningOutlined,
-  ThunderboltOutlined,
   SettingOutlined,
   LineChartOutlined,
-  ApiOutlined,
-  BulbOutlined,
   FileTextOutlined,
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
@@ -33,16 +30,6 @@ export const AppSidebar: React.FC = () => {
       label: 'Issues',
     },
     {
-      key: '/actions',
-      icon: <ThunderboltOutlined />,
-      label: 'Actions',
-    },
-    {
-      key: '/ai-history',
-      icon: <BulbOutlined />,
-      label: 'AI History',
-    },
-    {
       key: 'monitoring',
       icon: <LineChartOutlined />,
       label: 'Monitoring',
@@ -63,20 +50,9 @@ export const AppSidebar: React.FC = () => {
       ],
     },
     {
-      key: 'system',
-      icon: <ApiOutlined />,
-      label: 'System',
-      children: [
-        {
-          key: '/settings',
-          icon: <SettingOutlined />,
-          label: 'Settings',
-        },
-        {
-          key: '/about',
-          label: 'About',
-        },
-      ],
+      key: '/settings',
+      icon: <SettingOutlined />,
+      label: 'Settings',
     },
   ];
 
@@ -101,7 +77,7 @@ export const AppSidebar: React.FC = () => {
           padding: '0 16px',
         }}
       >
-        <span style={{ color: '#3b82f6', marginRight: 8 }}>✦</span> AIOS
+        AIOS
       </div>
 
       <Menu

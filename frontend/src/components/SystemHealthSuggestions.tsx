@@ -1,10 +1,10 @@
-import React from 'react';
+﻿import React from 'react';
 import { Alert, Card, Space, Typography, Tag, Divider } from 'antd';
-import { 
-  BulbOutlined, 
-  WarningOutlined, 
+import {
+  BulbOutlined,
+  WarningOutlined,
   CheckCircleOutlined,
-  InfoCircleOutlined 
+  InfoCircleOutlined
 } from '@ant-design/icons';
 
 const { Title, Text, Paragraph } = Typography;
@@ -41,7 +41,7 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
   if (cpuUsage > 90) {
     suggestions.push({
       type: 'error',
-      title: '🔥 Critical CPU Usage',
+      title: 'Critical CPU Usage',
       message: `CPU usage is at ${cpuUsage.toFixed(1)}%, which is critically high and may cause system instability.`,
       actions: [
         'Identify and terminate resource-heavy processes',
@@ -54,7 +54,7 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
   } else if (cpuUsage > 70) {
     suggestions.push({
       type: 'warning',
-      title: '⚠️ High CPU Usage',
+      title: 'High CPU Usage',
       message: `CPU usage is at ${cpuUsage.toFixed(1)}%, which is higher than recommended.`,
       actions: [
         'Monitor top CPU-consuming processes',
@@ -66,7 +66,7 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
   } else if (cpuUsage < 10) {
     suggestions.push({
       type: 'success',
-      title: '✅ Optimal CPU Performance',
+      title: 'Optimal CPU Performance',
       message: `CPU usage is healthy at ${cpuUsage.toFixed(1)}%. System is running efficiently.`,
       actions: []
     });
@@ -76,7 +76,7 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
   if (memoryPercent > 95) {
     suggestions.push({
       type: 'error',
-      title: '🚨 Critical Memory Pressure',
+      title: 'Critical Memory Pressure',
       message: `Memory usage is at ${memoryPercent.toFixed(1)}%, system may start paging to disk.`,
       actions: [
         'Immediately close memory-intensive applications',
@@ -90,7 +90,7 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
   } else if (memoryPercent > 80) {
     suggestions.push({
       type: 'warning',
-      title: '⚠️ High Memory Usage',
+      title: 'High Memory Usage',
       message: `Memory usage is at ${memoryPercent.toFixed(1)}%. Consider freeing up memory.`,
       actions: [
         'Close unused browser tabs and applications',
@@ -103,7 +103,7 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
   } else if (memoryPercent < 50) {
     suggestions.push({
       type: 'info',
-      title: '💡 Memory Status Good',
+      title: 'Memory Status Good',
       message: `Memory usage is comfortable at ${memoryPercent.toFixed(1)}%.`,
       actions: []
     });
@@ -113,7 +113,7 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
   if (diskIO > 200) {
     suggestions.push({
       type: 'warning',
-      title: '💾 High Disk Activity',
+      title: 'High Disk Activity',
       message: `Disk I/O is at ${diskIO.toFixed(1)} MB/s, which may indicate heavy read/write operations.`,
       actions: [
         'Check for disk-intensive processes (database, file indexing)',
@@ -126,7 +126,7 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
   } else if (diskIO < 1 && processCount > 50) {
     suggestions.push({
       type: 'info',
-      title: '📊 Low Disk Activity',
+      title: 'Low Disk Activity',
       message: 'Disk I/O is minimal, which is normal for idle systems.',
       actions: []
     });
@@ -136,7 +136,7 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
   if (networkIO > 100) {
     suggestions.push({
       type: 'info',
-      title: '🌐 High Network Activity',
+      title: 'High Network Activity',
       message: `Network I/O is at ${networkIO.toFixed(1)} MB/s.`,
       actions: [
         'Check for large file transfers or downloads',
@@ -151,7 +151,7 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
   if (processCount > 300) {
     suggestions.push({
       type: 'warning',
-      title: '🔄 High Process Count',
+      title: 'High Process Count',
       message: `System is running ${processCount} processes, which may impact performance.`,
       actions: [
         'Review and close unnecessary applications',
@@ -167,7 +167,7 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
   if (activeIssuesCount > 0) {
     suggestions.push({
       type: 'error',
-      title: '🔍 Active Issues Detected',
+      title: 'Active Issues Detected',
       message: `${activeIssuesCount} system issues require attention.`,
       actions: [
         'Navigate to Issues page to view details',
@@ -183,7 +183,7 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
   if (overallHealthy && suggestions.length === 0) {
     suggestions.push({
       type: 'success',
-      title: '🎉 System Health Excellent',
+      title: 'System Health Excellent',
       message: 'All metrics are within optimal ranges. No action required.',
       actions: [
         'System is performing well',
@@ -194,7 +194,7 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
   }
 
   return (
-    <Card 
+    <Card
       title={
         <Space>
           <BulbOutlined style={{ fontSize: '20px', color: '#faad14' }} />
@@ -239,9 +239,9 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
             showIcon
             icon={
               suggestion.type === 'success' ? <CheckCircleOutlined /> :
-              suggestion.type === 'warning' ? <WarningOutlined /> :
-              suggestion.type === 'error' ? <WarningOutlined /> :
-              <InfoCircleOutlined />
+                suggestion.type === 'warning' ? <WarningOutlined /> :
+                  suggestion.type === 'error' ? <WarningOutlined /> :
+                    <InfoCircleOutlined />
             }
           />
         ))}
@@ -254,8 +254,8 @@ export const SystemHealthSuggestions: React.FC<SystemHealthSuggestionsProps> = (
           <InfoCircleOutlined /> These suggestions are generated based on real-time system metrics and best practices.
         </Text>
         <Text type="secondary" style={{ fontSize: '12px' }}>
-          📊 Metrics analyzed: CPU ({cpuUsage.toFixed(1)}%), Memory ({memoryPercent.toFixed(1)}%), 
-          Disk I/O ({diskIO.toFixed(1)} MB/s), Network ({networkIO.toFixed(1)} MB/s), 
+          Metrics analyzed: CPU ({cpuUsage.toFixed(1)}%), Memory ({memoryPercent.toFixed(1)}%),
+          Disk I/O ({diskIO.toFixed(1)} MB/s), Network ({networkIO.toFixed(1)} MB/s),
           Processes ({processCount})
         </Text>
       </Space>

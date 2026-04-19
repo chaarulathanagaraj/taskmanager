@@ -52,7 +52,7 @@ const ProcessesPage: React.FC = () => {
   const totalSystemProcesses = processData?.totalSystemProcesses || 0;
 
   // Filter processes based on search text
-  const filteredProcesses = processes.filter((process: ProcessInfo) => 
+  const filteredProcesses = processes.filter((process: ProcessInfo) =>
     process.name.toLowerCase().includes(searchText.toLowerCase()) ||
     process.pid.toString().includes(searchText)
   );
@@ -105,8 +105,8 @@ const ProcessesPage: React.FC = () => {
               }
               value={stats.totalCpu.toFixed(2)}
               suffix="%"
-              valueStyle={{ 
-                color: stats.totalCpu > 90 ? '#ff4d4f' : stats.totalCpu > 70 ? '#faad14' : '#52c41a' 
+              valueStyle={{
+                color: stats.totalCpu > 90 ? '#ff4d4f' : stats.totalCpu > 70 ? '#faad14' : '#52c41a'
               }}
             />
             <div style={{ marginTop: 8, fontSize: '12px', color: '#666' }}>
@@ -155,8 +155,8 @@ const ProcessesPage: React.FC = () => {
             onSearch={setSearchText}
           />
 
-          <ProcessTable 
-            processes={sortedProcesses} 
+          <ProcessTable
+            processes={sortedProcesses}
             loading={isLoading}
           />
         </Space>

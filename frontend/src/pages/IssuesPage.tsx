@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+﻿import { useState, useEffect, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Select, Space, Tag, Card, Progress, Button, Empty, Spin, Modal, Row, Col, Typography } from 'antd';
 import { WarningOutlined, BulbOutlined, CheckCircleOutlined } from '@ant-design/icons';
@@ -51,6 +51,16 @@ const CRITICAL_PROCESS_NAMES = new Set([
   'explorer',
   'registry',
   'memory compression',
+  'code',
+  'code - insiders',
+  'devenv',
+  'java',
+  'javaw',
+  'node',
+  'powershell',
+  'pwsh',
+  'cmd',
+  'conhost',
 ]);
 
 const normalizeProcessName = (value: string): string =>
@@ -65,7 +75,7 @@ const normalizeProcessName = (value: string): string =>
 const IssuesPage: React.FC = () => {
   const { data: issues, isLoading, error } = useIssues();
   const [filter, setFilter] = useState<string>('all');
-    const [diagnosisReport, setDiagnosisReport] = useState<CompleteDiagnosisReport | null>(null);
+  const [diagnosisReport, setDiagnosisReport] = useState<CompleteDiagnosisReport | null>(null);
   const [activeDiagnosisIssue, setActiveDiagnosisIssue] = useState<DiagnosticIssue | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [executing, setExecuting] = useState(false);
@@ -75,13 +85,14 @@ const IssuesPage: React.FC = () => {
   const [resolvingIssueId, setResolvingIssueId] = useState<number | null>(null);
   const [resolutionFeedbackByIssue, setResolutionFeedbackByIssue] = useState<Record<number, ResolutionFeedback>>({});
   const [protectedPatterns, setProtectedPatterns] = useState<string[]>([]);
+  const [protectionLoaded, setProtectionLoaded] = useState(false);
   const [runtimeSettings, setRuntimeSettings] = useState({
     dryRunMode: true,
     autoRemediation: false,
   });
   const [issueProgress, setIssueProgress] = useState<Record<number, IssueProgress>>({});
   const [rulePreviewsMap, setRulePreviewsMap] = useState<Record<number, RuleExecutionPreview>>({});
-  
+
   // Rule preview state
   const [previewModalVisible, setPreviewModalVisible] = useState(false);
   const [rulePreview] = useState<RuleExecutionPreview | null>(null);
@@ -237,10 +248,20 @@ const IssuesPage: React.FC = () => {
       return true;
     }
     if (protectedPatterns.length === 0) return false;
-    return protectedPatterns.some((pattern) => globToRegex(pattern).test(name));
+    return protectedPatterns.some((pattern) => {
+      const regex = globToRegex(pattern);
+      return regex.test(name)
+        || regex.test(normalizedName)
+        || regex.test(`${normalizedName}.exe`);
+    });
   };
 
-  const selectableIssues = filteredIssues.filter((i) => Boolean(i.id));
+  const visibleIssues = filteredIssues.filter((i) => !isIssueProtected(i));
+  const selectableIssues = visibleIssues.filter((i) => Boolean(i.id));
+  const visibleIssueIdSet = useMemo(
+    () => new Set(visibleIssues.map((i) => i.id).filter((id): id is number => Boolean(id))),
+    [visibleIssues]
+  );
   const sortedSelectableIssues = useMemo(() => {
     return [...selectableIssues].sort((a, b) => {
       const aSafe = !isIssueProtected(a);
@@ -309,6 +330,7 @@ const IssuesPage: React.FC = () => {
     };
     setRuntimeSettings(nextSettings);
     setProtectedPatterns(response.data?.protectedProcesses || []);
+    setProtectionLoaded(true);
     return nextSettings;
   };
 
@@ -319,7 +341,7 @@ const IssuesPage: React.FC = () => {
     try {
       // Get evaluation for recommended action
       const preview = await rulesApi.getPreview(issue.id);
-      setRulePreviewsMap(prev => ({...prev, [issue.id!]: preview}));
+      setRulePreviewsMap(prev => ({ ...prev, [issue.id!]: preview }));
       updateIssueProgress(issue.id, { evaluated: true });
 
       const isLowConfidence = issue.confidence < 0.8;
@@ -341,7 +363,7 @@ const IssuesPage: React.FC = () => {
 
           toast.info('Executing remediation...', { autoClose: 2000 });
           const result: any = await rulesApi.execute(issue.id!, preview.primaryAction, effectiveDryRun);
-          
+
           if (result?.status === 'PENDING') {
             toast.info('Execution request is pending approval. The issue stays active until approved and completed.', {
               autoClose: 6000,
@@ -383,7 +405,7 @@ const IssuesPage: React.FC = () => {
           toast.info(verifiedResolved
             ? 'Remediation executed and verified as resolved.'
             : (feedback.explanation || 'Remediation executed, but the issue is still unresolved.'),
-          { autoClose: 6000 });
+            { autoClose: 6000 });
           queryClient.invalidateQueries({ queryKey: ['issues'] });
           queryClient.invalidateQueries({ queryKey: ['dashboard'] });
         } catch (error: any) {
@@ -419,7 +441,7 @@ const IssuesPage: React.FC = () => {
 
   const handleExecuteRemediation = async () => {
     if (!diagnosisReport) return;
-    
+
     setExecuting(true);
     try {
       const result: any = await rulesApi.execute(
@@ -429,7 +451,7 @@ const IssuesPage: React.FC = () => {
       );
       const feedback = getResolutionFeedback(result, 'Remediation execution finished without verification details.');
       storeResolutionFeedback(diagnosisReport.issueId, feedback);
-      
+
       // Only proceed if execution was successful
       if (result?.success === true) {
         const resolved = await verifyIssueResolution(diagnosisReport.issueId);
@@ -466,7 +488,7 @@ const IssuesPage: React.FC = () => {
       );
       toast.info('Approval request submitted. An administrator will review.', { autoClose: 5000 });
     } catch (error) {
-       toast.error('Failed to request approval.');
+      toast.error('Failed to request approval.');
     }
   };
 
@@ -478,10 +500,10 @@ const IssuesPage: React.FC = () => {
     if (effectiveDryRun) {
       toast.info('Global dry-run is enabled in Settings. Running simulation only.', { autoClose: 5000 });
     }
-    
+
     toast.info('Executing remediation plan...', { autoClose: 3000 });
     setPreviewModalVisible(false);
-    
+
     try {
       const result: any = await rulesApi.execute(
         rulePreview.issueId,
@@ -491,7 +513,7 @@ const IssuesPage: React.FC = () => {
       updateIssueProgress(rulePreview.issueId, { executed: true });
       const feedback = getResolutionFeedback(result, 'Execution completed without verification details.');
       storeResolutionFeedback(rulePreview.issueId, feedback);
-      
+
       // Only proceed if execution was successful
       if (result?.success === true) {
         const resolved = await verifyIssueResolution(rulePreview.issueId);
@@ -509,8 +531,8 @@ const IssuesPage: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['issues'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
     } catch (error) {
-       toast.error('Execution failed');
-       console.error(error);
+      toast.error('Execution failed');
+      console.error(error);
     }
   };
 
@@ -532,13 +554,14 @@ const IssuesPage: React.FC = () => {
   };
 
   const showBulkAutomationSummary = (result: BulkAutomationResult) => {
-    const protectedOutcomes = result.outcomes.filter((o) => o.status === 'SKIPPED_PROTECTED');
-    const resolvedOutcomes = result.outcomes.filter((o) => o.status === 'RESOLVED');
-    const automatedOutcomes = result.outcomes.filter((o) => o.status === 'AUTOMATED');
-    const simulatedOutcomes = result.outcomes.filter((o) => o.status === 'SIMULATED');
-    const needsManualReviewOutcomes = result.outcomes.filter((o) => o.status === 'NEEDS_MANUAL_REVIEW');
-    const needsAttentionOutcomes = result.outcomes.filter((o) => o.status === 'NEEDS_ATTENTION');
-    const failedOutcomes = result.outcomes.filter((o) => o.status === 'FAILED' || o.status === 'ERROR');
+    const visibleOutcomes = result.outcomes.filter(
+      (o) => o.status !== 'SKIPPED_PROTECTED' && o.status !== 'NEEDS_MANUAL_REVIEW'
+    );
+    const resolvedOutcomes = visibleOutcomes.filter((o) => o.status === 'RESOLVED');
+    const automatedOutcomes = visibleOutcomes.filter((o) => o.status === 'AUTOMATED');
+    const simulatedOutcomes = visibleOutcomes.filter((o) => o.status === 'SIMULATED');
+    const needsAttentionOutcomes = visibleOutcomes.filter((o) => o.status === 'NEEDS_ATTENTION');
+    const failedOutcomes = visibleOutcomes.filter((o) => o.status === 'FAILED' || o.status === 'ERROR');
 
     Modal.info({
       title: 'Automation Summary',
@@ -548,31 +571,14 @@ const IssuesPage: React.FC = () => {
           <p><strong>Total active:</strong> {result.totalActive}</p>
           <p><strong>Resolved:</strong> {result.resolved}</p>
           <p><strong>Automated (attempted):</strong> {result.automated}</p>
-          {result.needsManualReview > 0 && <p><strong>Needs manual review:</strong> {result.needsManualReview}</p>}
-          <p><strong>Skipped (protected):</strong> {result.skippedProtected}</p>
           <p><strong>Failed:</strong> {result.failed}</p>
 
           <Row gutter={16}>
-            <Col span={12}>
-              <Card size="small" title={`Protected (Manual) - ${protectedOutcomes.length}`}>
-                {protectedOutcomes.length === 0 ? (
-                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="None" />
-                ) : (
-                  <ul style={{ margin: 0, paddingLeft: 20 }}>
-                    {protectedOutcomes.map((item) => (
-                      <li key={item.issueId}>
-                        #{item.issueId} {item.processName} (PID {item.affectedPid}): {item.message}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </Card>
-            </Col>
-            <Col span={12}>
-              <Card size="small" title={`Selected Processes - Resolved ${resolvedOutcomes.length}, Automated ${automatedOutcomes.length}, Needs Review ${needsManualReviewOutcomes.length}, Failed ${failedOutcomes.length}`}>
+            <Col span={24}>
+              <Card size="small" title={`Selected Processes - Resolved ${resolvedOutcomes.length}, Automated ${automatedOutcomes.length}, Failed ${failedOutcomes.length}`}>
                 {resolvedOutcomes.length > 0 && (
                   <div style={{ marginBottom: 8 }}>
-                    <strong>✓ Resolved</strong>
+                    <strong>Resolved</strong>
                     <ul style={{ margin: 0, paddingLeft: 20 }}>
                       {resolvedOutcomes.map((item) => (
                         <li key={item.issueId}>
@@ -584,7 +590,7 @@ const IssuesPage: React.FC = () => {
                 )}
                 {automatedOutcomes.length > 0 && (
                   <div style={{ marginBottom: 8 }}>
-                    <strong>⚙ Automated (attempted)</strong>
+                    <strong>Automated (attempted)</strong>
                     <ul style={{ margin: 0, paddingLeft: 20 }}>
                       {automatedOutcomes.map((item) => (
                         <li key={item.issueId}>
@@ -596,21 +602,9 @@ const IssuesPage: React.FC = () => {
                 )}
                 {needsAttentionOutcomes.length > 0 && (
                   <div style={{ marginBottom: 8 }}>
-                    <strong>⚠ Needs Attention</strong>
+                    <strong>Needs Attention</strong>
                     <ul style={{ margin: 0, paddingLeft: 20 }}>
                       {needsAttentionOutcomes.map((item) => (
-                        <li key={item.issueId}>
-                          #{item.issueId} {item.processName}: {item.message}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {needsManualReviewOutcomes.length > 0 && (
-                  <div style={{ marginBottom: 8 }}>
-                    <strong>🔍 Needs Manual Review</strong>
-                    <ul style={{ margin: 0, paddingLeft: 20 }}>
-                      {needsManualReviewOutcomes.map((item) => (
                         <li key={item.issueId}>
                           #{item.issueId} {item.processName}: {item.message}
                         </li>
@@ -632,7 +626,7 @@ const IssuesPage: React.FC = () => {
                 )}
                 {failedOutcomes.length > 0 && (
                   <div>
-                    <strong>❌ Failed</strong>
+                    <strong>Failed</strong>
                     <ul style={{ margin: 0, paddingLeft: 20 }}>
                       {failedOutcomes.map((item) => (
                         <li key={item.issueId}>
@@ -642,7 +636,7 @@ const IssuesPage: React.FC = () => {
                     </ul>
                   </div>
                 )}
-                {resolvedOutcomes.length === 0 && automatedOutcomes.length === 0 && failedOutcomes.length === 0 && needsManualReviewOutcomes.length === 0 && (
+                {resolvedOutcomes.length === 0 && automatedOutcomes.length === 0 && failedOutcomes.length === 0 && needsAttentionOutcomes.length === 0 && simulatedOutcomes.length === 0 && (
                   <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No automatable outcomes" />
                 )}
               </Card>
@@ -664,7 +658,7 @@ const IssuesPage: React.FC = () => {
       return;
     }
 
-    const selectedIssues = filteredIssues.filter((i) => i.id && selectedSafeIssueIds.includes(i.id));
+    const selectedIssues = visibleIssues.filter((i) => i.id && selectedSafeIssueIds.includes(i.id));
     if (selectedIssues.length === 0) {
       toast.warning('Selected issues are no longer available in the current list.');
       return;
@@ -694,20 +688,22 @@ const IssuesPage: React.FC = () => {
           const backendResult = await rulesApi.automateAllSafeIssues();
           const selectedIssueIdSet = new Set(selectedIssues.map((i) => i.id as number));
           const outcomes: BulkAutomationOutcome[] = backendResult.outcomes.filter((o) => selectedIssueIdSet.has(o.issueId));
+          const visibleOutcomes: BulkAutomationOutcome[] = outcomes.filter(
+            (o) => o.status !== 'SKIPPED_PROTECTED' && o.status !== 'NEEDS_MANUAL_REVIEW'
+          );
 
           const result: BulkAutomationResult = {
-            totalActive: selectedIssues.length,
-            automated: outcomes.filter((o) => o.status === 'RESOLVED' || o.status === 'AUTOMATED' || o.status === 'SIMULATED').length,
-            resolved: outcomes.filter((o) => o.status === 'RESOLVED').length,
-            skippedProtected: outcomes.filter((o) => o.status === 'SKIPPED_PROTECTED').length,
-            needsManualReview: outcomes.filter((o) => o.status === 'NEEDS_MANUAL_REVIEW').length,
-            failed: outcomes.filter((o) => o.status === 'FAILED' || o.status === 'ERROR').length,
-            outcomes,
+            totalActive: visibleOutcomes.length,
+            automated: visibleOutcomes.filter((o) => o.status === 'RESOLVED' || o.status === 'AUTOMATED' || o.status === 'SIMULATED').length,
+            resolved: visibleOutcomes.filter((o) => o.status === 'RESOLVED').length,
+            skippedProtected: 0,
+            needsManualReview: 0,
+            failed: visibleOutcomes.filter((o) => o.status === 'FAILED' || o.status === 'ERROR').length,
+            outcomes: visibleOutcomes,
           };
 
-          const simulated = outcomes.filter((o) => o.status === 'SIMULATED').length;
-          const needsReview = outcomes.filter((o) => o.status === 'NEEDS_MANUAL_REVIEW').length;
-          const message = `Automation complete. Resolved: ${result.resolved}, Automated: ${result.automated}, Needs Review: ${needsReview}, Skipped: ${result.skippedProtected}, Failed: ${result.failed}.`;
+          const simulated = visibleOutcomes.filter((o) => o.status === 'SIMULATED').length;
+          const message = `Automation complete. Resolved: ${result.resolved}, Automated: ${result.automated}, Simulated: ${simulated}, Failed: ${result.failed}.`;
           toast.success(message);
           showBulkAutomationSummary(result);
           setSelectedSafeIssueIds([]);
@@ -728,15 +724,16 @@ const IssuesPage: React.FC = () => {
     // We moved notifications to AppHeader to avoid side popups
 
     // Auto-fetch rule evaluations for active issues
-    const fetchEvaluationsAndDiagnose = async () => { try { // Auto diagnosis
+    const fetchEvaluationsAndDiagnose = async () => {
+      try { // Auto diagnosis
         for (const issue of issues) {
           if (issue.status === "ACTIVE" && issue.id && issue.confidence < 0.8 && !(issueProgress[issue.id] && issueProgress[issue.id].analyzed)) {
-             try {
-                const report = await diagnosisMutation.mutateAsync(issue.id);
-                if (report.success) {
-                  updateIssueProgress(issue.id, { analyzed: true });
-                }
-             } catch (err) {}
+            try {
+              const report = await diagnosisMutation.mutateAsync(issue.id);
+              if (report.success) {
+                updateIssueProgress(issue.id, { analyzed: true });
+              }
+            } catch (err) { }
           }
         }
       } catch (err) {
@@ -752,6 +749,7 @@ const IssuesPage: React.FC = () => {
         await refreshRuntimeSettings();
       } catch (error) {
         console.error('Failed to load protected process patterns', error);
+        setProtectionLoaded(true);
       }
     };
 
@@ -759,6 +757,19 @@ const IssuesPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (!protectionLoaded) {
+      return;
+    }
+
+    // Always prune stale/protected IDs from current selection.
+    setSelectedSafeIssueIds((prev) => {
+      const sanitized = prev.filter((id) => visibleIssueIdSet.has(id));
+      if (sanitized.length === prev.length) {
+        return prev;
+      }
+      return sanitized;
+    });
+
     if (sortedSelectableIssues.length === 0) {
       setSelectedSafeIssueIds((prev) => (prev.length === 0 ? prev : []));
       setHasManualSelection(false);
@@ -770,7 +781,7 @@ const IssuesPage: React.FC = () => {
     }
 
     const autoSelectedSafe = sortedSelectableIssues
-      .filter((issue) => !isIssueProtected(issue) && Boolean(issue.id))
+      .filter((issue) => Boolean(issue.id))
       .map((issue) => issue.id as number);
 
     setSelectedSafeIssueIds((prev) => {
@@ -779,7 +790,7 @@ const IssuesPage: React.FC = () => {
       }
       return autoSelectedSafe;
     });
-  }, [sortedSelectableIssues, hasManualSelection]);
+  }, [sortedSelectableIssues, hasManualSelection, visibleIssueIdSet, protectionLoaded]);
   if (isLoading) {
     return (
       <div style={{ textAlign: 'center', padding: '100px' }}>
@@ -846,11 +857,11 @@ const IssuesPage: React.FC = () => {
         </Col>
       </Row>
 
-      {filteredIssues.length === 0 ? (
+      {visibleIssues.length === 0 ? (
         <Empty description="No issues found" />
       ) : (
         <Row gutter={[16, 16]}>
-          {filteredIssues.map((issue: DiagnosticIssue) => {
+          {visibleIssues.map((issue: DiagnosticIssue) => {
             const preview = issue.id ? rulePreviewsMap[issue.id] : undefined;
             const process = getFriendlyProcessInfo(issue.processName);
 

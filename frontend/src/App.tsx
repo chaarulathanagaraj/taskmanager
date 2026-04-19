@@ -1,18 +1,14 @@
 import { useState } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { ThemeProvider, useTheme } from './components/ThemeProvider';
 import ErrorBoundary, { PageErrorBoundary } from './components/ErrorBoundary';
 import { MainLayout, AppSidebar, AppHeader, AppFooter, AppBreadcrumb } from './components/Layout';
-import { useNotifications } from './hooks/useNotifications';
 import Dashboard from './pages/Dashboard';
 import IssuesPage from './pages/IssuesPage';
-import ActionsPage from './pages/ActionsPage';
 import SettingsPage from './pages/SettingsPage';
-import AboutPage from './pages/AboutPage';
-import AIHistoryPage from './pages/AIHistoryPage';
 import LogsPage from './pages/LogsPage';
 import MetricsPage from './pages/MetricsPage';
 import ProcessesPage from './pages/ProcessesPage';
@@ -34,9 +30,6 @@ const queryClient = new QueryClient({
  */
 function AppContent() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  
-  // Enable notifications for critical issues
-  useNotifications(true);
 
   return (
     <MainLayout
@@ -50,13 +43,13 @@ function AppContent() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/issues" element={<IssuesPage />} />
-        <Route path="/actions" element={<ActionsPage />} />
-        <Route path="/ai-history" element={<AIHistoryPage />} />
+        <Route path="/actions" element={<Navigate to="/" replace />} />
+        <Route path="/ai-history" element={<Navigate to="/" replace />} />
         <Route path="/metrics" element={<MetricsPage />} />
         <Route path="/processes" element={<ProcessesPage />} />
         <Route path="/logs" element={<LogsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/about" element={<AboutPage />} />
+        <Route path="/about" element={<Navigate to="/settings" replace />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </MainLayout>

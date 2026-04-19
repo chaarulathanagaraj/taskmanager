@@ -121,7 +121,7 @@ public class RuleEngineService {
                         .affectedPid(issue.getAffectedPid())
                         .issueType(issue.getType() != null ? issue.getType().name() : "UNKNOWN")
                         .status("SKIPPED_PROTECTED")
-                        .message("User-protected process; resolve manually from Issues page")
+                        .message("User-protected process; resolve manually from Dashboard")
                         .build());
                 continue;
             }
@@ -151,7 +151,7 @@ public class RuleEngineService {
             return result;
         }
 
-        int maxParallel = Math.max(1, Math.min(automatableIssues.size(), 6));
+        int maxParallel = Math.max(1, Math.min(automatableIssues.size(), 10));
         ExecutorService executor = Executors.newFixedThreadPool(maxParallel);
 
         try {
@@ -207,9 +207,18 @@ public class RuleEngineService {
                                         resolvedCount.incrementAndGet();
                                         status = "RESOLVED";
                                         message = "Issue resolved via automated remediation";
-                                    } else if (execution.getMessage() != null && !execution.getMessage().isBlank()) {
-                                        status = "AUTOMATED";
-                                        message = execution.getMessage();
+                                    } else {
+                                        status = "NEEDS_ATTENTION";
+                                        if (summary != null && summary.getMessage() != null
+                                                && !summary.getMessage().isBlank()) {
+                                            message = summary.getMessage();
+                                        } else if (execution.getMessage() != null
+                                                && !execution.getMessage().isBlank()) {
+                                            message = execution.getMessage();
+                                        } else {
+                                            message = "Remediation executed, but resolution verification failed. "
+                                                    + "Issue may still be active.";
+                                        }
                                     }
                                 }
 

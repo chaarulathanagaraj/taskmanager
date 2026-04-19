@@ -32,7 +32,7 @@ export const useNotifications = (enabled: boolean = true) => {
         notification.error(config);
         // Request browser notification for critical issues
         if ('Notification' in window && Notification.permission === 'granted') {
-          new Notification('🚨 CRITICAL Issue', {
+          new Notification('High-priority issue', {
             body: `${issue.processName}: ${issue.details}`,
             icon: '/favicon.ico',
           });

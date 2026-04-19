@@ -13,7 +13,6 @@ export const AppBreadcrumb: React.FC = () => {
     '/': 'Home',
     '/issues': 'Issues',
     '/actions': 'Actions',
-    '/ai-history': 'AI History',
     '/settings': 'Settings',
     '/metrics': 'Metrics',
     '/processes': 'Processes',

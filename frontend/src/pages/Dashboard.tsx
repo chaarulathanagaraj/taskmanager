@@ -1,14 +1,18 @@
-import { Row, Col, Card, Spin, Alert } from 'antd';
+import { Row, Col, Card, Spin, Alert, Button, Space, Typography } from 'antd';
 import { useDashboard } from '../hooks/useMetrics';
 import { MetricsCard } from '../components/MetricsCard';
 import { MetricsChart } from '../components/MetricsChart';
 import { ProcessTable } from '../components/ProcessTable';
+import { RemediationControls } from '../components';
+
+const { Text } = Typography;
 
 /**
  * Main dashboard page displaying system overview
  */
 const Dashboard: React.FC = () => {
   const { data, isLoading, error } = useDashboard();
+  const cpuUsage = Math.min(100, Math.max(0, data?.cpuUsage || 0));
 
   if (isLoading) {
     return (
@@ -35,7 +39,7 @@ const Dashboard: React.FC = () => {
         <Col xs={24} sm={12} md={6}>
           <MetricsCard
             title="CPU Usage"
-            value={data?.cpuUsage || 0}
+            value={cpuUsage}
             suffix="%"
             threshold={80}
           />
@@ -78,13 +82,15 @@ const Dashboard: React.FC = () => {
         <Col xs={24} md={12}>
           <Card title="Active Issues">
             <p>Total: {data?.activeIssues?.length || 0}</p>
-            {/* Issue list will be added */}
+            <Text type="secondary">Only non-protected processes are auto-selected for automation.</Text>
           </Card>
         </Col>
         <Col xs={24} md={12}>
-          <Card title="Recent Actions">
-            <p>Total: {data?.recentActions?.length || 0}</p>
-            {/* Action list will be added */}
+          <Card title="Manual Remediation">
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Text type="secondary">Run manual remediation directly from the Dashboard.</Text>
+              <RemediationControls />
+            </Space>
           </Card>
         </Col>
       </Row>

@@ -1,6 +1,6 @@
 import { Card, Row, Col, Statistic, Space, Tag, Spin, Alert, Tooltip } from 'antd';
-import { 
-  CloudServerOutlined, 
+import {
+  CloudServerOutlined,
   HddOutlined,
   ThunderboltOutlined,
   InfoCircleOutlined,
@@ -17,7 +17,7 @@ import { useEffect, useState } from 'react';
 const MetricsPage: React.FC = () => {
   const { data: metrics, isLoading: metricsLoading, error: metricsError } = useMetrics(10);
   const { data: dashboard, isLoading: dashboardLoading, error: dashboardError } = useDashboard();
-  
+
   // Track last updated time dynamically
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
 
@@ -62,8 +62,8 @@ const MetricsPage: React.FC = () => {
     return '#52c41a';
   };
 
-  const cpuPercent = dashboard?.cpuUsage || 0;
-  const memoryPercent = dashboard?.memoryPercent || 0;
+  const cpuPercent = Math.min(100, Math.max(0, dashboard?.cpuUsage || 0));
+  const memoryPercent = Math.min(100, Math.max(0, dashboard?.memoryPercent || 0));
   const diskIO = dashboard?.diskIO || 0;
 
   return (
@@ -79,7 +79,7 @@ const MetricsPage: React.FC = () => {
               prefix={<ThunderboltOutlined />}
               valueStyle={{ color: getStatusColor(cpuPercent, { warning: 70, danger: 90 }) }}
             />
-            <Tag 
+            <Tag
               color={getStatusColor(cpuPercent, { warning: 70, danger: 90 })}
               style={{ marginTop: 8 }}
             >
@@ -97,7 +97,7 @@ const MetricsPage: React.FC = () => {
               prefix={<CloudServerOutlined />}
               valueStyle={{ color: getStatusColor(memoryPercent, { warning: 80, danger: 95 }) }}
             />
-            <Tag 
+            <Tag
               color={getStatusColor(memoryPercent, { warning: 80, danger: 95 })}
               style={{ marginTop: 8 }}
             >
@@ -115,7 +115,7 @@ const MetricsPage: React.FC = () => {
               prefix={<HddOutlined />}
               valueStyle={{ color: getStatusColor(diskIO, { warning: 100, danger: 200 }) }}
             />
-            <Tag 
+            <Tag
               color={getStatusColor(diskIO, { warning: 100, danger: 200 })}
               style={{ marginTop: 8 }}
             >
@@ -161,6 +161,20 @@ const MetricsPage: React.FC = () => {
       </Row>
 
       {/* AI Health Suggestions */}
+      <Card
+        title={
+          <Space>
+            <InfoCircleOutlined />
+            <span>What This Board Is Used For</span>
+          </Space>
+        }
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <span>This board shows real-time system load and health trends so you can decide when manual remediation is needed.</span>
+          <span>Recommendations below are generated from current CPU, memory, disk, network, and active issue signals.</span>
+        </Space>
+      </Card>
+
       <SystemHealthSuggestions
         cpuUsage={cpuPercent}
         memoryPercent={memoryPercent}
