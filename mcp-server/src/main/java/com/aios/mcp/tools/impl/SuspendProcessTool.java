@@ -79,26 +79,27 @@ public class SuspendProcessTool implements McpTool {
             return result;
         }
 
-        String csharpCode = "using System;using System.Runtime.InteropServices;"
-                + "public static class NativeMethods {"
-                + "[DllImport(\"kernel32.dll\", SetLastError=true)] public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);"
-                + "[DllImport(\"ntdll.dll\")] public static extern int NtSuspendProcess(IntPtr processHandle);"
-                + "[DllImport(\"kernel32.dll\", SetLastError=true)] public static extern bool CloseHandle(IntPtr hObject);"
-                + "}";
-
         String script = "$ErrorActionPreference='Stop';"
                 + "$targetPid=" + pid + ";"
                 + "$p=Get-Process -Id $targetPid -ErrorAction Stop;"
-                + "$csharpCode=@\"\n" + csharpCode + "\n\"@;"
-                + "Add-Type -TypeDefinition $csharpCode;"
+                + "$csharp=@\""
+                + "using System;"
+                + "using System.Runtime.InteropServices;"
+                + "public static class NativeMethods {"
+                + "[DllImport(\\\"kernel32.dll\\\", SetLastError=true)]public static extern IntPtr OpenProcess(uint dwDesiredAccess,bool bInheritHandle,int dwProcessId);"
+                + "[DllImport(\\\"ntdll.dll\\\")]public static extern int NtSuspendProcess(IntPtr processHandle);"
+                + "[DllImport(\\\"kernel32.dll\\\", SetLastError=true)]public static extern bool CloseHandle(IntPtr hObject);"
+                + "}"
+                + "\"@;"
+                + "Add-Type -TypeDefinition $csharp;"
                 + "$PROCESS_SUSPEND_RESUME=0x0800;"
                 + "$PROCESS_QUERY_LIMITED_INFORMATION=0x1000;"
-                + "$access = $PROCESS_SUSPEND_RESUME -bor $PROCESS_QUERY_LIMITED_INFORMATION;"
-                + "$h=[NativeMethods]::OpenProcess($access, $false, $targetPid);"
-                + "if ($h -eq [IntPtr]::Zero) { throw ('OpenProcess failed: ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error()); }"
+                + "$access=$PROCESS_SUSPEND_RESUME -bor $PROCESS_QUERY_LIMITED_INFORMATION;"
+                + "$h=[NativeMethods]::OpenProcess($access,$false,$targetPid);"
+                + "if($h -eq [IntPtr]::Zero){throw ('OpenProcess failed: '+[Runtime.InteropServices.Marshal]::GetLastWin32Error())}"
                 + "$status=[NativeMethods]::NtSuspendProcess($h);"
-                + "[NativeMethods]::CloseHandle($h) | Out-Null;"
-                + "if ($status -ne 0) { throw ('NtSuspendProcess failed with status ' + $status); }"
+                + "[NativeMethods]::CloseHandle($h)|Out-Null;"
+                + "if($status -ne 0){throw ('NtSuspendProcess failed with status '+$status)}"
                 + "[PSCustomObject]@{status='suspended';pid=$targetPid;processName=$p.ProcessName}|ConvertTo-Json -Compress";
 
         String stdout = runPowerShell(script);
