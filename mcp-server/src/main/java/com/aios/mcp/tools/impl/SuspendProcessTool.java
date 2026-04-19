@@ -79,18 +79,23 @@ public class SuspendProcessTool implements McpTool {
             return result;
         }
 
+        String csharpCode = "using System;"
+                + "using System.Runtime.InteropServices;"
+                + "public static class NativeMethods {"
+                + "[DllImport(\"kernel32.dll\", SetLastError=true)]"
+                + "public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);"
+                + "[DllImport(\"ntdll.dll\")]"
+                + "public static extern int NtSuspendProcess(IntPtr processHandle);"
+                + "[DllImport(\"kernel32.dll\", SetLastError=true)]"
+                + "public static extern bool CloseHandle(IntPtr hObject);"
+                + "}";
+
+        String encodedCs = Base64.getEncoder().encodeToString(csharpCode.getBytes(StandardCharsets.UTF_8));
+
         String script = "$ErrorActionPreference='Stop';"
                 + "$targetPid=" + pid + ";"
                 + "$p=Get-Process -Id $targetPid -ErrorAction Stop;"
-                + "$csharp=@\"\n"
-                + "using System;\n"
-                + "using System.Runtime.InteropServices;\n"
-                + "public static class NativeMethods {\n"
-                + "[DllImport(\\\"kernel32.dll\\\", SetLastError=true)]public static extern IntPtr OpenProcess(uint dwDesiredAccess,bool bInheritHandle,int dwProcessId);\n"
-                + "[DllImport(\\\"ntdll.dll\\\")]public static extern int NtSuspendProcess(IntPtr processHandle);\n"
-                + "[DllImport(\\\"kernel32.dll\\\", SetLastError=true)]public static extern bool CloseHandle(IntPtr hObject);\n"
-                + "}\n"
-                + "\"@;"
+                + "$csharp=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('" + encodedCs + "'));"
                 + "Add-Type -TypeDefinition $csharp;"
                 + "$PROCESS_SUSPEND_RESUME=0x0800;"
                 + "$PROCESS_QUERY_LIMITED_INFORMATION=0x1000;"
