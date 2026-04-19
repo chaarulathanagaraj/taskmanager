@@ -9,31 +9,38 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.stereotype.Component;
 import oshi.SystemInfo;
 import oshi.software.os.OSProcess;
+
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.Set;
 
 /**
- * MCP tool to trim a process working set.
+ * MCP tool to suspend a process by PID.
  */
 @Component
-public class TrimWorkingSetTool implements McpTool {
+public class SuspendProcessTool implements McpTool {
 
     private final ObjectMapper objectMapper;
     private final SystemInfo systemInfo;
 
-    public TrimWorkingSetTool(ObjectMapper objectMapper) {
+    private static final Set<String> PROTECTED_PROCESSES = Set.of(
+            "system", "smss.exe", "csrss.exe", "wininit.exe", "services.exe",
+            "lsass.exe", "winlogon.exe", "svchost.exe", "dwm.exe", "explorer.exe",
+            "system idle process", "registry", "memory compression");
+
+    public SuspendProcessTool(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.systemInfo = new SystemInfo();
     }
 
     @Override
     public String getName() {
-        return "trim_working_set";
+        return "suspend_process";
     }
 
     @Override
     public String getDescription() {
-        return "Trims memory working set for a process using Windows EmptyWorkingSet API.";
+        return "Suspends a process by PID.";
     }
 
     @Override
@@ -54,54 +61,49 @@ public class TrimWorkingSetTool implements McpTool {
                     "Process not found with PID: " + pid);
         }
 
+        String processName = process.getName();
+        if (PROTECTED_PROCESSES.contains(processName.toLowerCase())) {
+            throw new McpToolException(getName(),
+                    McpToolException.ERROR_PROTECTED_RESOURCE,
+                    "Cannot suspend protected system process: " + processName);
+        }
+
         ObjectNode result = objectMapper.createObjectNode();
         result.put("pid", pid);
-        result.put("processName", process.getName());
+        result.put("processName", processName);
         result.put("dryRun", dryRun);
-        result.put("memoryBytesBefore", process.getResidentSetSize());
 
         if (dryRun) {
             result.put("status", "dry_run");
-            result.put("message", "Would trim working set for PID " + pid);
+            result.put("message", "Would suspend process: " + processName + " (PID: " + pid + ")");
             return result;
         }
 
-        String script = """
-                $ErrorActionPreference='Stop'
-                $p=Get-Process -Id %d
-                $before=$p.WorkingSet64
-                $code=@'
-                using System;
-                using System.Runtime.InteropServices;
-                public static class NativeMethods {
-                    [DllImport("psapi.dll", SetLastError=true)]
-                    public static extern bool EmptyWorkingSet(IntPtr hProcess);
-                }
-                '@
-                Add-Type -TypeDefinition $code -ErrorAction Stop
-                $ok=[NativeMethods]::EmptyWorkingSet($p.Handle)
-                $p.Refresh()
-                $after=$p.WorkingSet64
-                [PSCustomObject]@{success=$ok;memoryBytesBefore=$before;memoryBytesAfter=$after;memoryBytesFreed=($before-$after)}|ConvertTo-Json -Compress
-                """
-                .formatted(pid);
+        String script = "$ErrorActionPreference='Stop';"
+                + "$targetPid=" + pid + ";"
+                + "$p=Get-Process -Id $targetPid -ErrorAction Stop;"
+                + "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;"
+                + "public static class NativeMethods {"
+                + "[DllImport(\"kernel32.dll\", SetLastError=true)] public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);"
+                + "[DllImport(\"ntdll.dll\")] public static extern int NtSuspendProcess(IntPtr processHandle);"
+                + "[DllImport(\"kernel32.dll\", SetLastError=true)] public static extern bool CloseHandle(IntPtr hObject);"
+                + "}';"
+                + "$PROCESS_SUSPEND_RESUME=0x0800;"
+                + "$PROCESS_QUERY_LIMITED_INFORMATION=0x1000;"
+                + "$access = $PROCESS_SUSPEND_RESUME -bor $PROCESS_QUERY_LIMITED_INFORMATION;"
+                + "$h=[NativeMethods]::OpenProcess($access, $false, $targetPid);"
+                + "if ($h -eq [IntPtr]::Zero) { throw ('OpenProcess failed: ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error()); }"
+                + "$status=[NativeMethods]::NtSuspendProcess($h);"
+                + "[NativeMethods]::CloseHandle($h) | Out-Null;"
+                + "if ($status -ne 0) { throw ('NtSuspendProcess failed with status ' + $status); }"
+                + "[PSCustomObject]@{status='suspended';pid=$targetPid;processName=$p.ProcessName}|ConvertTo-Json -Compress";
 
         String stdout = runPowerShell(script);
         try {
             JsonNode details = objectMapper.readTree(stdout);
-            if (!details.path("success").asBoolean(false)) {
-                throw new McpToolException(getName(),
-                        McpToolException.ERROR_OPERATION_FAILED,
-                        "EmptyWorkingSet returned false");
-            }
-
-            result.put("status", "trimmed");
-            result.put("message", "Working set trimmed successfully");
+            result.put("status", details.path("status").asText("suspended"));
+            result.put("message", "Process suspended successfully");
             result.set("details", details);
-            result.put("memoryBytesAfter", details.path("memoryBytesAfter").asLong());
-            result.put("memoryBytesFreed", details.path("memoryBytesFreed").asLong());
-        } catch (McpToolException e) {
-            throw e;
         } catch (Exception e) {
             throw new McpToolException(getName(),
                     McpToolException.ERROR_OPERATION_FAILED,
@@ -121,7 +123,7 @@ public class TrimWorkingSetTool implements McpTool {
 
         ObjectNode pid = objectMapper.createObjectNode();
         pid.put("type", "integer");
-        pid.put("description", "Process ID to trim");
+        pid.put("description", "Process ID to suspend");
         properties.set("pid", pid);
 
         ObjectNode dryRun = objectMapper.createObjectNode();
@@ -150,13 +152,12 @@ public class TrimWorkingSetTool implements McpTool {
 
     @Override
     public SafetyLevel getSafetyLevel() {
-        return SafetyLevel.MEDIUM;
+        return SafetyLevel.HIGH;
     }
 
     private String runPowerShell(String script) throws McpToolException {
-        String encodedScript = Base64.getEncoder()
-                .encodeToString(script.getBytes(StandardCharsets.UTF_16LE));
-        ProcessBuilder pb = new ProcessBuilder("powershell", "-NoProfile", "-EncodedCommand", encodedScript);
+        String encoded = Base64.getEncoder().encodeToString(script.getBytes(StandardCharsets.UTF_16LE));
+        ProcessBuilder pb = new ProcessBuilder("powershell", "-NoProfile", "-EncodedCommand", encoded);
         pb.redirectErrorStream(false);
 
         try {

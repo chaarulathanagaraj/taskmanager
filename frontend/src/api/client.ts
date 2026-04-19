@@ -107,7 +107,7 @@ export const issuesApi = {
  * Actions API endpoints
  */
 export const actionsApi = {
-  execute: (data: { actionType: string; targetPid: number; dryRun: boolean }) =>
+  execute: (data: { actionType: string; targetPid: number; dryRun: boolean; targetPriority?: string }) =>
     apiClient.post(`/actions/execute`, data),
 
   getAll: () =>

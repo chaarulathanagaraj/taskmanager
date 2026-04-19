@@ -63,7 +63,12 @@ public class ActionController {
                     request.getTargetPriority());
             return ResponseEntity.ok(result);
         } catch (Exception e) {
-            return ResponseEntity.internalServerError().body(Map.of("success", false, "error", e.getMessage()));
+            log.error("Manual execution failed: actionType={}, pid={}, error={}",
+                    request.getActionType(), request.getTargetPid(), e.getMessage(), e);
+            return ResponseEntity.ok(Map.of(
+                    "success", false,
+                    "message", e.getMessage(),
+                    "error", e.getMessage()));
         }
     }
 

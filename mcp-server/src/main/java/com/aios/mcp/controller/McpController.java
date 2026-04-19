@@ -82,7 +82,7 @@ public class McpController {
         } catch (McpToolException e) {
             long durationMs = Instant.now().toEpochMilli() - startTime.toEpochMilli();
 
-            McpToolResponse response = McpToolResponse.error(toolName, e);
+            McpToolResponse response = McpToolResponse.error(toolName, e.getErrorCode(), e.getMessage());
             response.setDurationMs(durationMs);
 
             return ResponseEntity.ok(response);

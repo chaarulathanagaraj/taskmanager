@@ -59,7 +59,22 @@ public class AgentClientImpl implements AgentClient {
                                     "steps", buildExecutionSteps("kill_process", response.result)));
                 }
                 return ActionResult.failure(
-                        buildMcpFailureMessage("KILL_PROCESS", parameters, response.error),
+                        buildMcpFailureMessage("KILL_PROCESS", parameters, response.error, response.errorCode),
+                        response.error != null ? response.error : "Unknown MCP error");
+            }
+
+            if ("SUSPEND_PROCESS".equals(actionType)) {
+                McpToolResponse response = executeMcpTool("suspend_process", parameters);
+                if (response.success && response.result != null) {
+                    return ActionResult.success(
+                            response.result.path("message").asText("Process suspended successfully"),
+                            Map.of(
+                                    "tool", "suspend_process",
+                                    "result", response.result,
+                                    "steps", buildExecutionSteps("suspend_process", response.result)));
+                }
+                return ActionResult.failure(
+                        buildMcpFailureMessage("SUSPEND_PROCESS", parameters, response.error, response.errorCode),
                         response.error != null ? response.error : "Unknown MCP error");
             }
 
@@ -76,7 +91,7 @@ public class AgentClientImpl implements AgentClient {
                                     "steps", buildExecutionSteps("reduce_priority", response.result)));
                 }
                 return ActionResult.failure(
-                        buildMcpFailureMessage("REDUCE_PRIORITY", parameters, response.error),
+                        buildMcpFailureMessage("REDUCE_PRIORITY", parameters, response.error, response.errorCode),
                         response.error != null ? response.error : "Unknown MCP error");
             }
 
@@ -91,7 +106,7 @@ public class AgentClientImpl implements AgentClient {
                                     "steps", buildExecutionSteps("trim_working_set", response.result)));
                 }
                 return ActionResult.failure(
-                        buildMcpFailureMessage("TRIM_WORKING_SET", parameters, response.error),
+                        buildMcpFailureMessage("TRIM_WORKING_SET", parameters, response.error, response.errorCode),
                         response.error != null ? response.error : "Unknown MCP error");
             }
 
@@ -106,7 +121,7 @@ public class AgentClientImpl implements AgentClient {
                                     "steps", buildExecutionSteps("restart_process", response.result)));
                 }
                 return ActionResult.failure(
-                        buildMcpFailureMessage("RESTART_PROCESS", parameters, response.error),
+                        buildMcpFailureMessage("RESTART_PROCESS", parameters, response.error, response.errorCode),
                         response.error != null ? response.error : "Unknown MCP error");
             }
 
@@ -118,7 +133,7 @@ public class AgentClientImpl implements AgentClient {
                             Map.of("tool", "reduce_priority", "result", response.result));
                 }
                 return ActionResult.failure(
-                        buildMcpFailureMessage("SET_PRIORITY", parameters, response.error),
+                        buildMcpFailureMessage("SET_PRIORITY", parameters, response.error, response.errorCode),
                         response.error != null ? response.error : "Unknown MCP error");
             }
 
@@ -293,6 +308,12 @@ public class AgentClientImpl implements AgentClient {
                 steps.add("Issued the process termination request to MCP");
                 steps.add("Captured the MCP status and message for confirmation");
             }
+            case "suspend_process" -> {
+                steps.add("Validated the target PID before execution");
+                steps.add("Checked for protected system process restrictions");
+                steps.add("Issued the process suspension request to MCP");
+                steps.add("Captured the MCP status and message for confirmation");
+            }
             case "reduce_priority" -> {
                 steps.add("Validated the target PID before execution");
                 steps.add("Read the current priority from the process");
@@ -326,29 +347,47 @@ public class AgentClientImpl implements AgentClient {
         return steps;
     }
 
-    private String buildMcpFailureMessage(String actionType, Map<String, Object> parameters, String rawError) {
+    private String buildMcpFailureMessage(String actionType, Map<String, Object> parameters, String rawError,
+            String rawErrorCode) {
         int pid = parsePid(parameters.get("pid"));
         String processName = extractProcessName(parameters, pid);
         String normalizedError = rawError == null ? "UNKNOWN" : rawError.trim();
         String upperError = normalizedError.toUpperCase();
+        String upperErrorCode = rawErrorCode == null ? "" : rawErrorCode.trim().toUpperCase();
+        boolean isReducePriority = "REDUCE_PRIORITY".equalsIgnoreCase(actionType)
+                || "SET_PRIORITY".equalsIgnoreCase(actionType);
 
         String actionLabel = formatActionName(actionType);
 
-        if (upperError.contains("RESOURCE_NOT_FOUND")) {
+        if (upperErrorCode.contains("RESOURCE_NOT_FOUND") || upperError.contains("RESOURCE_NOT_FOUND")) {
             return String.format(
                     "%s failed for %s (PID: %d): target process was not found. It may have already exited.",
                     actionLabel, processName, pid);
         }
 
-        if (upperError.contains("OPERATION_FAILED")) {
+        if (isReducePriority && (upperErrorCode.contains("PROTECTED_RESOURCE")
+                || upperError.contains("PROTECTED")
+                || upperError.contains("CRITICAL PROCESS")
+                || upperError.contains("SYSTEM PROCESS"))) {
             return String.format(
-                    "%s failed for %s (PID: %d): the OS rejected or could not complete the operation. Try running agent services with elevated permissions and retry.",
+                    "%s failed for %s (PID: %d): this is a protected/system process and Windows blocked priority changes.",
                     actionLabel, processName, pid);
         }
 
-        if (upperError.contains("ACCESS_DENIED") || upperError.contains("PERMISSION")) {
+        if (isReducePriority && (upperErrorCode.contains("PERMISSION_DENIED")
+                || upperError.contains("ACCESS_DENIED")
+                || upperError.contains("ACCESS DENIED")
+                || upperError.contains("PERMISSION")
+                || upperError.contains("PRIVILEGE"))) {
             return String.format(
-                    "%s failed for %s (PID: %d): access denied. Administrator privileges may be required.",
+                    "%s failed for %s (PID: %d): access denied. Run backend and MCP services as Administrator, then retry.",
+                    actionLabel, processName, pid);
+        }
+
+        if (isReducePriority
+                && (upperErrorCode.contains("OPERATION_FAILED") || upperError.contains("OPERATION_FAILED"))) {
+            return String.format(
+                    "%s failed for %s (PID: %d): Windows rejected this operation for the selected process. It may be protected or require higher privileges.",
                     actionLabel, processName, pid);
         }
 
@@ -402,5 +441,6 @@ public class AgentClientImpl implements AgentClient {
         public boolean success;
         public JsonNode result;
         public String error;
+        public String errorCode;
     }
 }

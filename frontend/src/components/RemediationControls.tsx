@@ -85,7 +85,7 @@ export const RemediationControls: React.FC<RemediationControlsProps> = ({
     mutationFn: async (values: ExecuteActionRequest) => {
       const response = await actionsApi.execute(values);
       if (response.data.success === false) {
-        throw new Error(response.data.error || 'Execution failed');
+        throw new Error(response.data.message || response.data.error || 'Execution failed');
       }
       return {
         success: true,

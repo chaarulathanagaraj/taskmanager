@@ -10,6 +10,8 @@ import org.springframework.stereotype.Component;
 import oshi.SystemInfo;
 import oshi.software.os.OSProcess;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.Set;
 
 /**
@@ -45,8 +47,8 @@ public class RestartProcessTool implements McpTool {
     public JsonNode execute(JsonNode parameters) throws McpToolException {
         if (!parameters.has("pid")) {
             throw new McpToolException(getName(),
-                    "Missing required parameter: pid",
-                    McpToolException.ERROR_INVALID_PARAMETERS);
+                    McpToolException.ERROR_INVALID_PARAMETERS,
+                    "Missing required parameter: pid");
         }
 
         int pid = parameters.get("pid").asInt();
@@ -57,15 +59,15 @@ public class RestartProcessTool implements McpTool {
         OSProcess process = systemInfo.getOperatingSystem().getProcess(pid);
         if (process == null) {
             throw new McpToolException(getName(),
-                    "Process not found with PID: " + pid,
-                    McpToolException.ERROR_RESOURCE_NOT_FOUND);
+                    McpToolException.ERROR_RESOURCE_NOT_FOUND,
+                    "Process not found with PID: " + pid);
         }
 
         String processName = process.getName();
         if (PROTECTED_PROCESSES.contains(processName.toLowerCase())) {
             throw new McpToolException(getName(),
-                    "Cannot restart protected system process: " + processName,
-                    McpToolException.ERROR_PROTECTED_RESOURCE);
+                    McpToolException.ERROR_PROTECTED_RESOURCE,
+                    "Cannot restart protected system process: " + processName);
         }
 
         ObjectNode result = objectMapper.createObjectNode();
@@ -82,10 +84,10 @@ public class RestartProcessTool implements McpTool {
         }
 
         String script = "$ErrorActionPreference='Stop';"
-                + "$pid=" + pid + ";"
+                + "$targetPid=" + pid + ";"
                 + "$force=$" + (force ? "true" : "false") + ";"
                 + "$waitMs=" + waitMs + ";"
-                + "$p=Get-CimInstance Win32_Process -Filter \"ProcessId = $pid\";"
+                + "$p=Get-CimInstance Win32_Process -Filter \"ProcessId = " + pid + "\";"
                 + "if (-not $p) { throw 'Process not found'; }"
                 + "$exe=$p.ExecutablePath;"
                 + "$cmd=$p.CommandLine;"
@@ -101,14 +103,14 @@ public class RestartProcessTool implements McpTool {
                 + "    if ($space -gt 0 -and $cmd.Length -gt ($space+1)) { $args=$cmd.Substring($space+1).Trim(); }"
                 + "  }"
                 + "}"
-                + "Stop-Process -Id $pid -Force:$force;"
+                + "Stop-Process -Id $targetPid -Force:$force;"
                 + "Start-Sleep -Milliseconds $waitMs;"
                 + "if ([string]::IsNullOrWhiteSpace($args)) {"
                 + "  $newProc=Start-Process -FilePath $exe -PassThru;"
                 + "} else {"
                 + "  $newProc=Start-Process -FilePath $exe -ArgumentList $args -PassThru;"
                 + "}"
-                + "[PSCustomObject]@{status='restarted';oldPid=$pid;newPid=$newProc.Id;processName=$name;executablePath=$exe;arguments=$args}|ConvertTo-Json -Compress";
+                + "[PSCustomObject]@{status='restarted';oldPid=$targetPid;newPid=$newProc.Id;processName=$name;executablePath=$exe;arguments=$args}|ConvertTo-Json -Compress";
 
         String stdout = runPowerShell(script);
         try {
@@ -119,8 +121,8 @@ public class RestartProcessTool implements McpTool {
             result.set("details", details);
         } catch (Exception e) {
             throw new McpToolException(getName(),
-                    "Failed to parse PowerShell output: " + e.getMessage(),
                     McpToolException.ERROR_OPERATION_FAILED,
+                    "Failed to parse PowerShell output: " + e.getMessage(),
                     e);
         }
 
@@ -183,7 +185,8 @@ public class RestartProcessTool implements McpTool {
     }
 
     private String runPowerShell(String script) throws McpToolException {
-        ProcessBuilder pb = new ProcessBuilder("powershell", "-NoProfile", "-Command", script);
+        String encoded = Base64.getEncoder().encodeToString(script.getBytes(StandardCharsets.UTF_16LE));
+        ProcessBuilder pb = new ProcessBuilder("powershell", "-NoProfile", "-EncodedCommand", encoded);
         pb.redirectErrorStream(false);
 
         try {
@@ -194,21 +197,21 @@ public class RestartProcessTool implements McpTool {
 
             if (exit != 0) {
                 throw new McpToolException(getName(),
-                        "PowerShell failed: " + (stderr.isBlank() ? stdout : stderr),
-                        McpToolException.ERROR_OPERATION_FAILED);
+                        McpToolException.ERROR_OPERATION_FAILED,
+                        "PowerShell failed: " + (stderr.isBlank() ? stdout : stderr));
             }
 
             return stdout;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new McpToolException(getName(),
-                    "Interrupted while executing PowerShell command",
                     McpToolException.ERROR_TIMEOUT,
+                    "Interrupted while executing PowerShell command",
                     e);
         } catch (Exception e) {
             throw new McpToolException(getName(),
-                    "Failed to execute PowerShell command: " + e.getMessage(),
                     McpToolException.ERROR_OPERATION_FAILED,
+                    "Failed to execute PowerShell command: " + e.getMessage(),
                     e);
         }
     }

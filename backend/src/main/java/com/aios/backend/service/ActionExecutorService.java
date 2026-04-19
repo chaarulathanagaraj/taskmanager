@@ -46,6 +46,9 @@ public class ActionExecutorService {
                 case "KILL_PROCESS" ->
                     actionResult = executeKillProcess(issue.getAffectedPid(), dryRun);
 
+                case "SUSPEND_PROCESS" ->
+                    actionResult = executeSuspendProcess(issue.getAffectedPid(), dryRun);
+
                 case "REDUCE_PRIORITY" ->
                     actionResult = executeReducePriority(issue.getAffectedPid(), dryRun, null);
 
@@ -138,6 +141,7 @@ public class ActionExecutorService {
             com.aios.shared.dto.ActionResult actionResult;
             switch (actionType) {
                 case "KILL_PROCESS" -> actionResult = executeKillProcess(pid, dryRun);
+                case "SUSPEND_PROCESS" -> actionResult = executeSuspendProcess(pid, dryRun);
                 case "REDUCE_PRIORITY" -> actionResult = executeReducePriority(pid, dryRun, targetPriority);
                 case "TRIM_WORKING_SET" -> actionResult = executeTrimWorkingSet(pid, dryRun);
                 case "RESTART_PROCESS" -> actionResult = executeRestartProcess(pid, processName, dryRun);
@@ -148,9 +152,12 @@ public class ActionExecutorService {
             result.put("details", actionResult.getDetails());
             return result;
         } catch (Exception e) {
+            log.error("Manual action execution failed: actionType={}, pid={}, error={}",
+                    actionType, pid, e.getMessage(), e);
             result.put("success", false);
+            result.put("message", e.getMessage());
             result.put("error", e.getMessage());
-            throw new RuntimeException("Action execution failed", e);
+            return result;
         }
     }
 
@@ -243,6 +250,16 @@ public class ActionExecutorService {
         }
 
         return agentClient.executeAction(ActionType.REDUCE_PRIORITY.name(), parameters);
+    }
+
+    private ActionResult executeSuspendProcess(int pid, boolean dryRun) {
+        log.info("Executing SUSPEND_PROCESS for PID {} (dryRun={})", pid, dryRun);
+
+        if (dryRun) {
+            return ActionResult.success("Dry run: Would suspend process " + pid);
+        }
+
+        return agentClient.executeAction(ActionType.SUSPEND_PROCESS.name(), Map.of("pid", pid));
     }
 
     private ActionResult executeTrimWorkingSet(int pid, boolean dryRun) {
